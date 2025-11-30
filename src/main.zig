@@ -58,6 +58,8 @@ const Output = struct {
     /// The refresh rate of the output in Hz (informative, not used for rendering).
     /// We pass it down to the shader in case it wants to use it.
     refresh_rate: u32 = undefined,
+    /// The transform of the output. Set by the `geometry` event.
+    transform: wl.Output.Transform = .normal,
 
     /// Create a new output object.
     pub fn create(allocator: Allocator, output: *wl.Output) !*Output {
@@ -122,7 +124,9 @@ const Output = struct {
             .done => {
                 self.ready = true;
             },
-            .geometry => {},
+            .geometry => |geometry| {
+                self.transform = geometry.transform;
+            },
         }
     }
 
@@ -328,14 +332,7 @@ const WlrSurface = struct {
         // We want to ignore any exclusive zones set by other surfaces.
         self.wlr_surface.setExclusiveZone(-1);
         self.wlr_surface.setSize(self.destination_width, self.destination_height);
-
-        // NOTE: When the wp_fractional_scale_manager_v1 protocol is active, the
-        //       application is responsible for rendering at the exact physical
-        //       pixel size, and the Wayland surface buffer scale should be set
-        //       to 1. We were previously always using the output scale here,
-        //       which caused "source rectangle extends outside of the content
-        //       area" errors on scaled outputs.
-        if (fractional_scale_manager != null) {
+        if (fractional_scale_manager) |_| {
             self.wl_surface.setBufferScale(1);
         } else {
             self.wl_surface.setBufferScale(@intCast(self.scale));
@@ -416,6 +413,13 @@ const WlrSurface = struct {
         var logical_width = config.width;
         var logical_height = config.height;
 
+        // If the compositor sends 0x0, it means we should decide the size.
+        // We default to the output size.
+        if (logical_width == 0 or logical_height == 0) {
+            logical_width = self.output.width;
+            logical_height = self.output.height;
+        }
+        
         // Custom resolution overrides everything.
         if (self.custom_resolution) |resolution| {
             logical_width = resolution.width;
@@ -427,13 +431,6 @@ const WlrSurface = struct {
         var buffer_scale: i32 = @intCast(self.scale);
 
         if (self.fractional_scale) |fs| {
-            // If the compositor sends 0x0, it means we should decide the size.
-            // We default to the output size.
-            if (logical_width == 0 or logical_height == 0) {
-                logical_width = self.output.width;
-                logical_height = self.output.height;
-            }
-
             // With fractional scaling, buffer size is logical size * fractional scale.
             buffer_width = fs.scaleSize(logical_width);
             buffer_height = fs.scaleSize(logical_height);
@@ -441,7 +438,7 @@ const WlrSurface = struct {
         } else {
             // With integer scaling:
             // If config was 0x0, we derived logical from physical output size.
-            if (logical_width == 0 and logical_height == 0) {
+            if (config.width == 0 and config.height == 0) {
                 var output_width = self.output.width;
                 var output_height = self.output.height;
 
@@ -562,12 +559,16 @@ const WlrSurface = struct {
 
     /// Handle a wlroots surface event.
     fn listener(wlr_surface: *zwlr.LayerSurfaceV1, event: zwlr.LayerSurfaceV1.Event, self: *WlrSurface) void {
-        _ = self;
+        _ = wlr_surface;
 
         switch (event) {
             .configure => |configure| {
-                const serial = configure.serial;
-                wlr_surface.ackConfigure(serial);
+                self.pending_config = .{
+                    .serial = configure.serial,
+                    .width = configure.width,
+                    .height = configure.height,
+                };
+                self.config_dirty = true;
             },
             .closed => {},
         }
@@ -664,6 +665,61 @@ fn handleArgsError(err: zig_args.Error) !void {
     try printUsage();
 }
 
+const Paper = struct {
+    allocator: Allocator,
+    surface: *WlrSurface,
+    shader: *Shader,
+    global_attributes: GlobalAttributes,
+    render_frame: bool = false,
+    next_frame_time: u64 = 0,
+    expected_frame_time_ns: u64 = 0,
+
+    pub fn create(
+        allocator: Allocator,
+        display: *wl.Display,
+        compositor: *wl.Compositor,
+        layer_shell: *zwlr.LayerShellV1,
+        fractional_scale_manager: ?*wp.FractionalScaleManagerV1,
+        viewporter: ?*wp.Viewporter,
+        output: *Output,
+        custom_resolution: ?Resolution,
+        shader_source: []const u8,
+        target_frame_rate: u32,
+    ) !*Paper {
+        const self = try allocator.create(Paper);
+        errdefer allocator.destroy(self);
+
+        self.allocator = allocator;
+        self.surface = try WlrSurface.createEgl(allocator, display, compositor, layer_shell, fractional_scale_manager, viewporter, output, custom_resolution);
+        errdefer self.surface.deinit();
+
+        try self.surface.makeCurrent();
+
+        self.global_attributes = GlobalAttributes.init();
+        self.global_attributes.bind();
+
+        self.shader = try Shader.create(allocator, shader_source, .{ .width = self.surface.width, .height = self.surface.height }, target_frame_rate);
+        errdefer {
+            self.global_attributes.deinit();
+            self.shader.destroy(allocator);
+        }
+
+        self.render_frame = false;
+        self.next_frame_time = 0;
+        self.expected_frame_time_ns = @as(u64, std.time.ns_per_s) / target_frame_rate;
+
+        return self;
+    }
+
+    pub fn destroy(self: *Paper) void {
+        self.surface.makeCurrent() catch {};
+        self.shader.destroy(self.allocator);
+        self.global_attributes.deinit();
+        self.surface.deinit();
+        self.allocator.destroy(self);
+    }
+};
+
 pub fn main() !u8 {
     const allocator = std.heap.c_allocator;
 
@@ -741,42 +797,6 @@ pub fn main() !u8 {
     const compositor = registry_listener.compositor orelse return error.NoWlCompositor;
     const layer_shell = registry_listener.layer_shell_v1 orelse return error.NoWlrLayerShellV1;
 
-    // TODO: Support multiple outputs at once.
-    const output = output: {
-        if (registry_listener.outputs.items.len == 0) {
-            std.log.err("no outputs available, cannot render", .{});
-            return 1;
-        }
-
-        if (options.options.output == null)
-            break :output registry_listener.outputs.items[0];
-
-        const wanted_output_name = options.options.output.?;
-        for (registry_listener.outputs.items) |output| {
-            try output.wait(display);
-            if (std.mem.eql(u8, output.name, wanted_output_name))
-                break :output output;
-        }
-
-        std.log.err("output with name {s} not found", .{wanted_output_name});
-        std.log.info("available outputs:", .{});
-        for (registry_listener.outputs.items) |output| {
-            std.log.info("- {s} ({}x{}, {}Hz)", .{
-                output.name,
-                output.width,
-                output.height,
-                @round(@as(f32, @floatFromInt(output.refresh_rate)) / 1000),
-            });
-        }
-
-        return 1;
-    };
-
-    const surface = try WlrSurface.createEgl(allocator, display, compositor, layer_shell, registry_listener.fractional_scale_manager_v1, registry_listener.viewporter_v1, output, custom_resolution);
-    defer surface.deinit();
-
-    try surface.makeCurrent();
-
     const shader_source = std.fs.cwd().readFileAlloc(allocator, shader_path, std.math.maxInt(usize)) catch |err| switch (err) {
         error.FileNotFound => {
             std.log.err("shader file not found: {s}", .{shader_path});
@@ -790,27 +810,80 @@ pub fn main() !u8 {
     defer allocator.free(shader_source);
 
     var using_custom_frame_rate = false;
-    var target_frame_rate = output.refresh_rate;
+    var custom_frame_rate: ?u32 = null;
     if (options.options.@"frame-rate") |frame_rate| {
         using_custom_frame_rate = true;
         if (frame_rate <= 0) {
             std.log.err("frame rate must be positive, got {}", .{frame_rate});
             return 1;
         }
-        target_frame_rate = @intCast(frame_rate);
+        custom_frame_rate = @intCast(frame_rate);
     }
 
-    const expected_frame_time_ns = @as(u64, std.time.ns_per_s) / target_frame_rate;
+    var papers = std.ArrayListUnmanaged(*Paper){};
+    defer {
+        for (papers.items) |paper| paper.destroy();
+        papers.deinit(allocator);
+    }
 
-    var global_attributes = GlobalAttributes.init();
-    defer global_attributes.deinit();
-    global_attributes.bind();
+    if (registry_listener.outputs.items.len == 0) {
+        std.log.err("no outputs available, cannot render", .{});
+        return 1;
+    }
 
-    const shader = try Shader.create(allocator, shader_source, .{ .width = surface.width, .height = surface.height }, target_frame_rate);
-    defer shader.destroy(allocator);
+    // Identify which outputs to use
+    var selected_outputs = std.ArrayListUnmanaged(*Output){};
+    defer selected_outputs.deinit(allocator);
 
-    var next_frame_time: u64 = 0;
-    var render_frame: bool = false;
+    if (options.options.output) |wanted_name| {
+        // Specific output requested
+        var found = false;
+        for (registry_listener.outputs.items) |output| {
+            try output.wait(display);
+            if (std.mem.eql(u8, output.name, wanted_name)) {
+                try selected_outputs.append(allocator, output);
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            std.log.err("output with name {s} not found", .{wanted_name});
+            std.log.info("available outputs:", .{});
+            for (registry_listener.outputs.items) |output| {
+                std.log.info("- {s} ({}x{}, {}Hz)", .{
+                    output.name,
+                    output.width,
+                    output.height,
+                    @round(@as(f32, @floatFromInt(output.refresh_rate)) / 1000),
+                });
+            }
+            return 1;
+        }
+    } else {
+        // Use ALL outputs
+        for (registry_listener.outputs.items) |output| {
+            try output.wait(display);
+            try selected_outputs.append(allocator, output);
+        }
+    }
+
+    for (selected_outputs.items) |output| {
+        const target_fps = if (custom_frame_rate) |fps| fps else output.refresh_rate;
+        const paper = try Paper.create(
+            allocator,
+            display,
+            compositor,
+            layer_shell,
+            registry_listener.fractional_scale_manager_v1,
+            registry_listener.viewporter_v1,
+            output,
+            custom_resolution,
+            shader_source,
+            target_fps,
+        );
+        try papers.append(allocator, paper);
+        std.log.info("Rendering on output: {s}", .{output.name});
+    }
 
     while (true) {
         // Always dispatch pending events first.
