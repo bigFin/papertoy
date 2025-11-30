@@ -266,6 +266,14 @@ const WlrSurface = struct {
     // --- wlroots Layer Shell ---
     /// The wlroots surface.
     wlr_surface: *zwlr.LayerSurfaceV1,
+    
+    /// Pending configuration from the compositor.
+    pending_config: ?struct {
+        serial: u32,
+        width: u32,
+        height: u32,
+    } = null,
+    config_dirty: bool = false,
 
     /// Create a wlroots surface with EGL for GPU rendering.
     pub fn createEgl(allocator: Allocator, display: *wl.Display, compositor: *wl.Compositor, layer_shell: *zwlr.LayerShellV1, fractional_scale_manager: ?*wp.FractionalScaleManagerV1, viewporter: ?*wp.Viewporter, output: *Output, custom_resolution: ?Resolution) !*WlrSurface {
@@ -333,8 +341,8 @@ const WlrSurface = struct {
             self.wl_surface.setBufferScale(@intCast(self.scale));
         }
 
-        // TODO: Make the user set this.
-        self.wlr_surface.setAnchor(.{ .top = true, .left = true });
+        // Anchor to all 4 sides to fill the screen.
+        self.wlr_surface.setAnchor(.{ .top = true, .bottom = true, .left = true, .right = true });
 
         if (fractional_scale_manager) |manager| {
             self.fractional_scale = try FractionalScale.create(allocator, manager, self.wl_surface);
@@ -395,57 +403,91 @@ const WlrSurface = struct {
         return self.wl_surface.frame();
     }
 
-    /// Synchronize changes in the output size and scale with the surface.
-    /// Returns whether any changes were applied.
-    pub fn synchronizeOutputChanges(self: *WlrSurface, display: *wl.Display) !bool {
-        try self.output.wait(display);
+    /// Handle any pending configuration events from the compositor.
+    /// Returns whether the surface size changed.
+    pub fn handleConfiguration(self: *WlrSurface) !bool {
+        if (!self.config_dirty) return false;
+        const config = self.pending_config orelse return false;
+        
+        self.config_dirty = false;
+        self.wlr_surface.ackConfigure(config.serial);
 
-        var expected_width = self.output.width;
-        var expected_height = self.output.height;
+        // Determine the logical size of the surface.
+        var logical_width = config.width;
+        var logical_height = config.height;
+
+        // Custom resolution overrides everything.
         if (self.custom_resolution) |resolution| {
-            expected_width = resolution.width;
-            expected_height = resolution.height;
+            logical_width = resolution.width;
+            logical_height = resolution.height;
         }
 
-        var expected_destination_width = self.output.width;
-        var expected_destination_height = self.output.height;
-        if (self.fractional_scale) |scale| {
-            expected_destination_width = scale.scaleSize(expected_destination_width);
-            expected_destination_height = scale.scaleSize(expected_destination_height);
-        }
+        var buffer_width = logical_width;
+        var buffer_height = logical_height;
+        var buffer_scale: i32 = @intCast(self.scale);
 
-        const width_changed = expected_width != self.width;
-        const height_changed = expected_height != self.height;
-        const scale_changed = self.output.scale != self.scale;
-        const destination_width_changed = expected_destination_width != self.destination_width;
-        const destination_height_changed = expected_destination_height != self.destination_height;
+        if (self.fractional_scale) |fs| {
+            // If the compositor sends 0x0, it means we should decide the size.
+            // We default to the output size.
+            if (logical_width == 0 or logical_height == 0) {
+                logical_width = self.output.width;
+                logical_height = self.output.height;
+            }
 
-        if (!width_changed and !height_changed and !scale_changed and !destination_width_changed and !destination_height_changed) {
-            // No changes to apply.
-            return false;
-        }
-
-        self.width = expected_width;
-        self.height = expected_height;
-        self.scale = self.output.scale;
-        self.destination_width = expected_destination_width;
-        self.destination_height = expected_destination_height;
-
-        // NOTE: See comment in `createEgl` about fractional scale handling.
-        if (self.fractional_scale != null) {
-            self.wl_surface.setBufferScale(1);
+            // With fractional scaling, buffer size is logical size * fractional scale.
+            buffer_width = fs.scaleSize(logical_width);
+            buffer_height = fs.scaleSize(logical_height);
+            buffer_scale = 1;
         } else {
-            self.wl_surface.setBufferScale(@intCast(self.scale));
-        }
+            // With integer scaling:
+            // If config was 0x0, we derived logical from physical output size.
+            if (logical_width == 0 and logical_height == 0) {
+                var output_width = self.output.width;
+                var output_height = self.output.height;
 
+                // If the output is rotated 90 or 270 degrees, swap width and height.
+                switch (self.output.transform) {
+                    .@"90", .@"270", .flipped_90, .flipped_270 => {
+                        std.mem.swap(u32, &output_width, &output_height);
+                    },
+                    else => {},
+                }
+
+                logical_width = output_width / self.output.scale;
+                logical_height = output_height / self.output.scale;
+            }
+            // Buffer size is logical * integer scale
+            buffer_width = logical_width * self.output.scale;
+            buffer_height = logical_height * self.output.scale;
+            buffer_scale = @intCast(self.output.scale);
+        }
+        
+        const width_changed = self.width != buffer_width;
+        const height_changed = self.height != buffer_height;
+        // We also need to check if destination size changed, or scale changed.
+        const dest_width_changed = self.destination_width != logical_width;
+        const dest_height_changed = self.destination_height != logical_height;
+        const scale_changed = self.scale != buffer_scale;
+
+        if (!width_changed and !height_changed and !dest_width_changed and !dest_height_changed and !scale_changed) return false;
+
+        self.width = buffer_width;
+        self.height = buffer_height;
+        self.destination_width = logical_width;
+        self.destination_height = logical_height;
+        self.scale = @intCast(buffer_scale);
+
+        self.wl_surface.setBufferScale(buffer_scale);
         self.wlr_surface.setSize(self.destination_width, self.destination_height);
         self.wl_egl_window.resize(@intCast(self.width), @intCast(self.height), 0, 0);
-        std.log.debug("Surface resized to ({}, {}) with scale {}", .{ self.width, self.height, self.scale });
+        
+        std.log.debug("Surface configured: Buffer={}x{}, Logical={}x{}, Scale={}", .{ 
+            self.width, self.height, self.destination_width, self.destination_height, buffer_scale 
+        });
 
         if (self.viewport) |viewport| {
             viewport.setSource(.fromInt(0), .fromInt(0), .fromInt(@intCast(self.width)), .fromInt(@intCast(self.height)));
             viewport.setDestination(@intCast(self.destination_width), @intCast(self.destination_height));
-            std.log.debug("Viewport set to source: ({}, {}, {}, {}), destination: ({}, {})", .{ 0, 0, self.width, self.height, self.destination_width, self.destination_height });
         }
 
         self.wl_surface.commit();
@@ -771,43 +813,66 @@ pub fn main() !u8 {
     var render_frame: bool = false;
 
     while (true) {
-        if (try surface.synchronizeOutputChanges(display)) {
-            shader.resolution = .{ .width = surface.width, .height = surface.height };
-            gl.viewport(0, 0, surface.width, surface.height);
-        }
+        // Always dispatch pending events first.
+        const dispatched = display.dispatchPending();
+        if (dispatched != .SUCCESS) return error.DispatchFailed;
 
         const now = try std.time.Instant.now();
         const now_ns = now.since(std.mem.zeroes(std.time.Instant));
 
-        // For the first frame, we want to render immediately.
-        if (shader.frame > 0) {
-            if (using_custom_frame_rate) {
-                // NOTE: dispatchPending because we don't want to block on a
-                //       non-existent frame event.
-                if (display.dispatchPending() != .SUCCESS) return error.DispatchFailed;
+        var min_sleep_time: ?u64 = null;
+        var rendered_count: usize = 0;
 
-                if (now_ns < next_frame_time) {
-                    // If we are ahead of the target frame rate, sleep until the next frame time.
-                    std.posix.nanosleep(0, next_frame_time - now_ns);
-                    continue;
+        for (papers.items) |paper| {
+            // Check if we should render this paper
+            if (paper.shader.frame > 0) {
+                if (using_custom_frame_rate) {
+                    if (now_ns < paper.next_frame_time) {
+                        const sleep_time = paper.next_frame_time - now_ns;
+                        if (min_sleep_time == null or sleep_time < min_sleep_time.?) {
+                            min_sleep_time = sleep_time;
+                        }
+                        continue;
+                    }
+                } else {
+                    if (!paper.render_frame) continue;
+                    paper.render_frame = false;
                 }
-            } else {
-                if (display.dispatch() != .SUCCESS) return error.DispatchFailed;
+            }
 
-                if (!render_frame) continue;
-                render_frame = false;
+            // We are going to render
+            rendered_count += 1;
+
+            try paper.surface.makeCurrent();
+
+            if (try paper.surface.handleConfiguration()) {
+                paper.shader.resolution = .{ .width = paper.surface.width, .height = paper.surface.height };
+                gl.viewport(0, 0, paper.surface.width, paper.surface.height);
+            }
+
+            paper.global_attributes.bind();
+            try paper.shader.render();
+
+            if (!using_custom_frame_rate) {
+                const callback = try paper.surface.requestAnimationFrame();
+                callback.setListener(*bool, setRenderFrame, &paper.render_frame);
+            } else {
+                paper.next_frame_time = now_ns + paper.expected_frame_time_ns;
+            }
+
+            try paper.surface.swapBuffers();
+        }
+
+        if (using_custom_frame_rate) {
+            if (min_sleep_time) |sleep_time| {
+                std.posix.nanosleep(0, sleep_time);
+            }
+        } else {
+            // If we didn't render anything, block until we get one to avoid busy looping.
+            if (rendered_count == 0) {
+                if (display.dispatch() != .SUCCESS) return error.DispatchFailed;
             }
         }
-
-        if (!using_custom_frame_rate) {
-            const callback = try surface.requestAnimationFrame();
-            callback.setListener(*bool, setRenderFrame, &render_frame);
-        }
-
-        next_frame_time = now_ns + expected_frame_time_ns;
-
-        try shader.render();
-        try surface.swapBuffers();
     }
 
     return 0;
