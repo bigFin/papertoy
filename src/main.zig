@@ -564,7 +564,7 @@ const FractionalScale = struct {
     /// this will return the original size.
     pub fn scaleSize(self: *FractionalScale, size: u32) u32 {
         return if (self.ready)
-            (size * 120) / self.preferred_scale
+            (size * self.preferred_scale) / 120
         else
             size;
     }
