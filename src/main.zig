@@ -112,7 +112,7 @@ const Output = struct {
 
                 self.width = @intCast(mode.width);
                 self.height = @intCast(mode.height);
-                self.refresh_rate = @intCast(mode.refresh);
+                self.refresh_rate = @intCast(@divTrunc(mode.refresh, 1000));
             },
             .scale => |scale| {
                 self.ready = false;
@@ -270,7 +270,7 @@ const WlrSurface = struct {
     // --- wlroots Layer Shell ---
     /// The wlroots surface.
     wlr_surface: *zwlr.LayerSurfaceV1,
-    
+
     /// Pending configuration from the compositor.
     pending_config: ?struct {
         serial: u32,
@@ -405,7 +405,7 @@ const WlrSurface = struct {
     pub fn handleConfiguration(self: *WlrSurface) !bool {
         if (!self.config_dirty) return false;
         const config = self.pending_config orelse return false;
-        
+
         self.config_dirty = false;
         self.wlr_surface.ackConfigure(config.serial);
 
@@ -419,7 +419,7 @@ const WlrSurface = struct {
             logical_width = self.output.width;
             logical_height = self.output.height;
         }
-        
+
         // Custom resolution overrides everything.
         if (self.custom_resolution) |resolution| {
             logical_width = resolution.width;
@@ -458,7 +458,7 @@ const WlrSurface = struct {
             buffer_height = logical_height * self.output.scale;
             buffer_scale = @intCast(self.output.scale);
         }
-        
+
         const width_changed = self.width != buffer_width;
         const height_changed = self.height != buffer_height;
         // We also need to check if destination size changed, or scale changed.
@@ -477,10 +477,8 @@ const WlrSurface = struct {
         self.wl_surface.setBufferScale(buffer_scale);
         self.wlr_surface.setSize(self.destination_width, self.destination_height);
         self.wl_egl_window.resize(@intCast(self.width), @intCast(self.height), 0, 0);
-        
-        std.log.debug("Surface configured: Buffer={}x{}, Logical={}x{}, Scale={}", .{ 
-            self.width, self.height, self.destination_width, self.destination_height, buffer_scale 
-        });
+
+        std.log.debug("Surface configured: Buffer={}x{}, Logical={}x{}, Scale={}", .{ self.width, self.height, self.destination_width, self.destination_height, buffer_scale });
 
         if (self.viewport) |viewport| {
             viewport.setSource(.fromInt(0), .fromInt(0), .fromInt(@intCast(self.width)), .fromInt(@intCast(self.height)));
@@ -630,12 +628,73 @@ const Resolution = struct {
     height: u32,
 };
 
+const OutputConfig = struct {
+    id: []const u8,
+    resolution: ?Resolution = null,
+    frame_rate: ?u32 = null,
+};
+
+// Global storage for output configurations parsed from CLI
+var global_output_configs = std.ArrayListUnmanaged(OutputConfig){};
+
+const OutputConfigCLI = struct {
+    pub fn parse(str: []const u8) !OutputConfigCLI {
+        const allocator = std.heap.c_allocator;
+        const config = try parseOutputConfigString(allocator, str);
+        try global_output_configs.append(allocator, config);
+        return .{};
+    }
+};
+
 const Options = struct {
-    output: ?[]const u8 = null,
-    @"frame-rate": ?u32 = null,
-    resolution: ?[]const u8 = null,
+    output: OutputConfigCLI = .{}, // Dummy field to trigger parsing
     help: bool = false,
 };
+
+fn parseResolution(s: []const u8) !Resolution {
+    var it = std.mem.splitScalar(u8, s, 'x');
+    const width_str = it.next() orelse return error.InvalidResolutionFormat;
+    const height_str = it.next() orelse return error.InvalidResolutionFormat;
+    if (it.next() != null) return error.InvalidResolutionFormat;
+
+    const width = std.fmt.parseInt(u32, width_str, 10) catch |err| switch (err) {
+        error.InvalidCharacter => return error.InvalidResolutionValue,
+        error.Overflow => return error.ResolutionOverflow,
+    };
+    const height = std.fmt.parseInt(u32, height_str, 10) catch |err| switch (err) {
+        error.InvalidCharacter => return error.InvalidResolutionValue,
+        error.Overflow => return error.ResolutionOverflow,
+    };
+    return .{ .width = width, .height = height };
+}
+
+fn parseOutputConfigString(allocator: Allocator, s: []const u8) !OutputConfig {
+    var config: OutputConfig = .{ .id = undefined, .resolution = null, .frame_rate = null };
+    var it = std.mem.splitScalar(u8, s, ',');
+    while (it.next()) |pair| {
+        var pair_it = std.mem.splitScalar(u8, pair, '=');
+        const key = pair_it.next() orelse return error.InvalidOutputConfig;
+        const value = pair_it.next() orelse return error.InvalidOutputConfig;
+        if (pair_it.next() != null) return error.InvalidOutputConfig;
+
+        if (std.mem.eql(u8, key, "id")) {
+            config.id = try allocator.dupe(u8, value);
+        } else if (std.mem.eql(u8, key, "resolution")) {
+            config.resolution = try parseResolution(value);
+        } else if (std.mem.eql(u8, key, "frame-rate")) {
+            config.frame_rate = std.fmt.parseInt(u32, value, 10) catch |err| switch (err) {
+                error.InvalidCharacter => return error.InvalidFrameRateValue,
+                error.Overflow => return error.FrameRateOverflow,
+            };
+            if (config.frame_rate.? == 0) return error.FrameRateMustBePositive;
+        } else {
+            return error.UnknownOutputConfigKey;
+        }
+    }
+
+    if (config.id.len == 0) return error.OutputIdRequired;
+    return config;
+}
 
 pub fn printUsage() !void {
     var buffer: [64]u8 = undefined;
@@ -652,9 +711,10 @@ pub fn printUsage() !void {
         \\  SHADER_FILE       The path to the shader file to render. This should be a GLSL
         \\                    fragment shader that is compatible with the Shadertoy API.
         \\Options:
-        \\  --output <name>    Set the output to render the shader on (default: first available output)
-        \\  --frame-rate <fps> Set a custom frame rate for the shader (default: vsync)
-        \\  --resolution <WxH> Set the resolution of the shader (default: output resolution)
+        \\  --output <config>  Configure individual outputs. Can be specified multiple times.
+        \\                     Format: "id=<name>[,resolution=<WxH>][,frame-rate=<fps>]"
+        \\                     Example: --output "id=DP-1,resolution=1920x1080,frame-rate=60"
+        \\                     If not specified, renders on all available outputs with native settings.
         \\  --help             Show this help message
         \\
     );
@@ -665,14 +725,21 @@ fn handleArgsError(err: zig_args.Error) !void {
     try printUsage();
 }
 
+const NextFrameStrategy = union(enum) {
+    Vsync: *wl.Callback,
+    Custom: struct {
+        next_frame_time: u64,
+        expected_frame_time_ns: u64,
+    },
+};
+
 const Paper = struct {
     allocator: Allocator,
     surface: *WlrSurface,
     shader: *Shader,
     global_attributes: GlobalAttributes,
     render_frame: bool = false,
-    next_frame_time: u64 = 0,
-    expected_frame_time_ns: u64 = 0,
+    next_frame_strategy: NextFrameStrategy,
 
     pub fn create(
         allocator: Allocator,
@@ -684,7 +751,7 @@ const Paper = struct {
         output: *Output,
         custom_resolution: ?Resolution,
         shader_source: []const u8,
-        target_frame_rate: u32,
+        target_frame_rate: ?u32, // Now optional
     ) !*Paper {
         const self = try allocator.create(Paper);
         errdefer allocator.destroy(self);
@@ -696,17 +763,24 @@ const Paper = struct {
         try self.surface.makeCurrent();
 
         self.global_attributes = GlobalAttributes.init();
+        errdefer self.global_attributes.deinit();
         self.global_attributes.bind();
 
-        self.shader = try Shader.create(allocator, shader_source, .{ .width = self.surface.width, .height = self.surface.height }, target_frame_rate);
-        errdefer {
-            self.global_attributes.deinit();
-            self.shader.destroy(allocator);
-        }
+        self.shader = try Shader.create(allocator, shader_source, .{ .width = self.surface.width, .height = self.surface.height }, target_frame_rate orelse output.refresh_rate);
+        errdefer self.shader.destroy(allocator);
 
         self.render_frame = false;
-        self.next_frame_time = 0;
-        self.expected_frame_time_ns = @as(u64, std.time.ns_per_s) / target_frame_rate;
+        if (target_frame_rate) |fps| {
+            self.next_frame_strategy = .{
+                .Custom = .{
+                    .next_frame_time = 0,
+                    .expected_frame_time_ns = @as(u64, std.time.ns_per_s) / fps,
+                },
+            };
+        } else {
+            self.next_frame_strategy = .{ .Vsync = try self.surface.requestAnimationFrame() };
+            self.next_frame_strategy.Vsync.setListener(*bool, setRenderFrame, &self.render_frame);
+        }
 
         return self;
     }
@@ -716,6 +790,9 @@ const Paper = struct {
         self.shader.destroy(self.allocator);
         self.global_attributes.deinit();
         self.surface.deinit();
+        if (self.next_frame_strategy == .Vsync) {
+            self.next_frame_strategy.Vsync.destroy();
+        }
         self.allocator.destroy(self);
     }
 };
@@ -746,34 +823,6 @@ pub fn main() !u8 {
         return 1;
     }
     const shader_path = options.positionals[0];
-
-    var custom_resolution: ?Resolution = null;
-    if (options.options.resolution) |resolution| {
-        var it = std.mem.splitScalar(u8, resolution, 'x');
-        const width_str = it.next() orelse {
-            std.log.err("resolution must be in the format WxH, got: {s}", .{resolution});
-            return 1;
-        };
-        const height_str = it.next() orelse {
-            std.log.err("resolution must be in the format WxH, got: {s}", .{resolution});
-            return 1;
-        };
-        if (it.next() != null) {
-            std.log.err("resolution must be in the format WxH, got: {s}", .{resolution});
-            return 1;
-        }
-
-        custom_resolution = .{
-            .width = std.fmt.parseInt(u32, width_str, 10) catch |err| {
-                std.log.err("failed to parse width from resolution: {s} ({})", .{ width_str, err });
-                return 1;
-            },
-            .height = std.fmt.parseInt(u32, height_str, 10) catch |err| {
-                std.log.err("failed to parse height from resolution: {s} ({})", .{ height_str, err });
-                return 1;
-            },
-        };
-    }
 
     // TODO: Investigate all try uses below and make them return a user-friendly error.
 
@@ -809,15 +858,23 @@ pub fn main() !u8 {
     };
     defer allocator.free(shader_source);
 
-    var using_custom_frame_rate = false;
-    var custom_frame_rate: ?u32 = null;
-    if (options.options.@"frame-rate") |frame_rate| {
-        using_custom_frame_rate = true;
-        if (frame_rate <= 0) {
-            std.log.err("frame rate must be positive, got {}", .{frame_rate});
-            return 1;
+    defer global_output_configs.deinit(allocator);
+
+    if (global_output_configs.items.len == 0) {
+        // No specific outputs requested, use all available outputs with native settings.
+        for (registry_listener.outputs.items) |output| {
+            try output.wait(display); // Ensure output is ready
+            try global_output_configs.append(allocator, .{
+                .id = try allocator.dupe(u8, output.name),
+                .resolution = null,
+                .frame_rate = null,
+            });
         }
-        custom_frame_rate = @intCast(frame_rate);
+    }
+
+    if (global_output_configs.items.len == 0) {
+        std.log.err("no outputs configured, cannot render", .{});
+        return 1;
     }
 
     var papers = std.ArrayListUnmanaged(*Paper){};
@@ -826,49 +883,34 @@ pub fn main() !u8 {
         papers.deinit(allocator);
     }
 
-    if (registry_listener.outputs.items.len == 0) {
-        std.log.err("no outputs available, cannot render", .{});
-        return 1;
-    }
-
-    // Identify which outputs to use
-    var selected_outputs = std.ArrayListUnmanaged(*Output){};
-    defer selected_outputs.deinit(allocator);
-
-    if (options.options.output) |wanted_name| {
-        // Specific output requested
-        var found = false;
+    for (global_output_configs.items) |output_config| {
+        // Find the actual output based on the ID
+        var selected_output: ?*Output = null;
         for (registry_listener.outputs.items) |output| {
-            try output.wait(display);
-            if (std.mem.eql(u8, output.name, wanted_name)) {
-                try selected_outputs.append(allocator, output);
-                found = true;
+            try output.wait(display); // Ensure output is ready
+            if (std.mem.eql(u8, output.name, output_config.id)) {
+                selected_output = output;
                 break;
             }
         }
-        if (!found) {
-            std.log.err("output with name {s} not found", .{wanted_name});
+
+        const output = selected_output orelse {
+            std.log.err("output with name '{s}' not found", .{output_config.id});
             std.log.info("available outputs:", .{});
-            for (registry_listener.outputs.items) |output| {
+            for (registry_listener.outputs.items) |out| {
                 std.log.info("- {s} ({}x{}, {}Hz)", .{
-                    output.name,
-                    output.width,
-                    output.height,
-                    @round(@as(f32, @floatFromInt(output.refresh_rate)) / 1000),
+                    out.name,
+                    out.width,
+                    out.height,
+                    @round(@as(f32, @floatFromInt(out.refresh_rate)) / 1000),
                 });
             }
             return 1;
-        }
-    } else {
-        // Use ALL outputs
-        for (registry_listener.outputs.items) |output| {
-            try output.wait(display);
-            try selected_outputs.append(allocator, output);
-        }
-    }
+        };
 
-    for (selected_outputs.items) |output| {
-        const target_fps = if (custom_frame_rate) |fps| fps else output.refresh_rate;
+        const target_resolution = if (output_config.resolution) |res| res else null;
+        const target_fps = if (output_config.frame_rate) |fps| fps else output.refresh_rate;
+
         const paper = try Paper.create(
             allocator,
             display,
@@ -877,12 +919,17 @@ pub fn main() !u8 {
             registry_listener.fractional_scale_manager_v1,
             registry_listener.viewporter_v1,
             output,
-            custom_resolution,
+            target_resolution,
             shader_source,
             target_fps,
         );
         try papers.append(allocator, paper);
-        std.log.info("Rendering on output: {s}", .{output.name});
+        std.log.info("Rendering on output: {s} (resolution: {}x{}, frame-rate: {})", .{
+            output.name,
+            paper.surface.destination_width,
+            paper.surface.destination_height,
+            target_fps,
+        });
     }
 
     while (true) {
@@ -893,25 +940,32 @@ pub fn main() !u8 {
         const now = try std.time.Instant.now();
         const now_ns = now.since(std.mem.zeroes(std.time.Instant));
 
-        var min_sleep_time: ?u64 = null;
+        var smallest_custom_sleep_time: ?u64 = null;
         var rendered_count: usize = 0;
 
         for (papers.items) |paper| {
-            // Check if we should render this paper
-            if (paper.shader.frame > 0) {
-                if (using_custom_frame_rate) {
-                    if (now_ns < paper.next_frame_time) {
-                        const sleep_time = paper.next_frame_time - now_ns;
-                        if (min_sleep_time == null or sleep_time < min_sleep_time.?) {
-                            min_sleep_time = sleep_time;
-                        }
-                        continue;
+            var should_render_this_frame = false;
+            switch (paper.next_frame_strategy) {
+                .Vsync => {
+                    if (paper.render_frame) {
+                        should_render_this_frame = true;
+                        paper.render_frame = false;
                     }
-                } else {
-                    if (!paper.render_frame) continue;
-                    paper.render_frame = false;
-                }
+                },
+                .Custom => |custom_strategy| {
+                    if (now_ns >= custom_strategy.next_frame_time) {
+                        should_render_this_frame = true;
+                        paper.next_frame_strategy.Custom.next_frame_time = now_ns + custom_strategy.expected_frame_time_ns;
+                    } else {
+                        const sleep_time = custom_strategy.next_frame_time - now_ns;
+                        if (smallest_custom_sleep_time == null or sleep_time < smallest_custom_sleep_time.?) {
+                            smallest_custom_sleep_time = sleep_time;
+                        }
+                    }
+                },
             }
+
+            if (!should_render_this_frame) continue;
 
             // We are going to render
             rendered_count += 1;
@@ -926,23 +980,29 @@ pub fn main() !u8 {
             paper.global_attributes.bind();
             try paper.shader.render();
 
-            if (!using_custom_frame_rate) {
-                const callback = try paper.surface.requestAnimationFrame();
-                callback.setListener(*bool, setRenderFrame, &paper.render_frame);
-            } else {
-                paper.next_frame_time = now_ns + paper.expected_frame_time_ns;
+            switch (paper.next_frame_strategy) {
+                .Vsync => {
+                    paper.next_frame_strategy.Vsync.destroy(); // Destroy previous callback
+                    paper.next_frame_strategy.Vsync = try paper.surface.requestAnimationFrame();
+                    paper.next_frame_strategy.Vsync.setListener(*bool, setRenderFrame, &paper.render_frame);
+                },
+                .Custom => {}, // Next frame time already updated
             }
 
             try paper.surface.swapBuffers();
         }
 
-        if (using_custom_frame_rate) {
-            if (min_sleep_time) |sleep_time| {
-                std.posix.nanosleep(0, sleep_time);
-            }
-        } else {
-            // If we didn't render anything, block until we get one to avoid busy looping.
-            if (rendered_count == 0) {
+        if (rendered_count == 0) {
+            // If nothing was rendered, wait for events or the next custom frame time.
+            if (smallest_custom_sleep_time) |sleep_time| {
+                var fds = [_]std.posix.pollfd{.{
+                    .fd = display.getFd(),
+                    .events = std.posix.POLL.IN,
+                    .revents = 0,
+                }};
+                _ = std.posix.poll(&fds, @intCast(sleep_time / 1_000_000)) catch {};
+            } else {
+                // If no custom frame rates, and nothing rendered, just block for events.
                 if (display.dispatch() != .SUCCESS) return error.DispatchFailed;
             }
         }
