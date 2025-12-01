@@ -734,11 +734,17 @@ const NextFrameStrategy = union(enum) {
 };
 
 const Paper = struct {
+    /// The allocator used for this paper's resources.
     allocator: Allocator,
+    /// The Wayland surface associated with this paper.
     surface: *WlrSurface,
+    /// The shader program being rendered.
     shader: *Shader,
+    /// Global shader attributes (e.g. time, resolution).
     global_attributes: GlobalAttributes,
+    /// Whether a new frame should be rendered. True when a frame callback is received (vsync).
     render_frame: bool = false,
+    /// The strategy used to determine when to render the next frame (Vsync or Custom).
     next_frame_strategy: NextFrameStrategy,
 
     pub fn create(
