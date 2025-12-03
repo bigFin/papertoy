@@ -42,7 +42,7 @@ const Output = struct {
     /// The ID of the output.
     id: u32,
     /// The name of the output. Set by the `name` event.
-    name: []const u8 = undefined,
+    name: ?[]const u8 = null,
     /// The human-friendly description of the output. Set by the `description` event.
     description: ?[]const u8 = null,
     /// The scale of this output. Defaults to 1. This only determines the scale of the
@@ -83,7 +83,7 @@ const Output = struct {
 
     /// Destroy the output object and free its resources.
     pub fn destroy(self: *Output) void {
-        self.allocator.free(self.name);
+        if (self.name) |n| self.allocator.free(n);
         if (self.description) |description| self.allocator.free(description);
         self.allocator.destroy(self);
     }
@@ -94,7 +94,7 @@ const Output = struct {
 
         switch (event) {
             .name => |name| {
-                // FIXME: Correctly deallocate the previous name.
+                if (self.name) |n| self.allocator.free(n);
                 self.ready = false;
                 self.name = self.allocator.dupe(u8, std.mem.sliceTo(name.name, 0)) catch @panic("OOM");
             },
@@ -871,7 +871,7 @@ pub fn main() !u8 {
         for (registry_listener.outputs.items) |output| {
             try output.wait(display); // Ensure output is ready
             try global_output_configs.append(allocator, .{
-                .id = try allocator.dupe(u8, output.name),
+                .id = try allocator.dupe(u8, output.name.?),
                 .resolution = null,
                 .frame_rate = null,
             });
@@ -894,7 +894,7 @@ pub fn main() !u8 {
         var selected_output: ?*Output = null;
         for (registry_listener.outputs.items) |output| {
             try output.wait(display); // Ensure output is ready
-            if (std.mem.eql(u8, output.name, output_config.id)) {
+            if (std.mem.eql(u8, output.name.?, output_config.id)) {
                 selected_output = output;
                 break;
             }
@@ -905,7 +905,7 @@ pub fn main() !u8 {
             std.log.info("available outputs:", .{});
             for (registry_listener.outputs.items) |out| {
                 std.log.info("- {s} ({}x{}, {}Hz)", .{
-                    out.name,
+                    out.name orelse "unknown",
                     out.width,
                     out.height,
                     @round(@as(f32, @floatFromInt(out.refresh_rate)) / 1000),
@@ -931,7 +931,7 @@ pub fn main() !u8 {
         );
         try papers.append(allocator, paper);
         std.log.info("Rendering on output: {s} (resolution: {}x{}, frame-rate: {})", .{
-            output.name,
+            output.name.?,
             paper.surface.destination_width,
             paper.surface.destination_height,
             target_fps,
