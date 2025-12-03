@@ -78,7 +78,7 @@ const Uniforms = struct {
     /// Bind and update the uniforms for rendering.
     pub fn bind(self: *Uniforms) void {
         self.ubo.bind(.uniform_buffer);
-        gl.bufferData(.uniform_buffer, UniformData, &.{self.data}, .dynamic_draw);
+        gl.bufferSubData(.uniform_buffer, 0, UniformData, &.{self.data});
     }
 };
 
