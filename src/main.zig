@@ -821,12 +821,12 @@ const Paper = struct {
     render_frame: bool = false,
     /// The strategy used to determine when to render the next frame (Vsync or Custom).
     next_frame_strategy: NextFrameStrategy,
-    /// The GLContext for this paper.
-    gl_context: GLContext,
+    /// The shared GLContext.
+    gl_context: *GLContext,
 
     pub fn create(
         allocator: Allocator,
-        display: *wl.Display,
+        gl_context: *GLContext,
         compositor: *wl.Compositor,
         layer_shell: *zwlr.LayerShellV1,
         fractional_scale_manager: ?*wp.FractionalScaleManagerV1,
@@ -840,10 +840,9 @@ const Paper = struct {
         errdefer allocator.destroy(self);
 
         self.allocator = allocator;
-        self.gl_context = try GLContext.init(allocator, display);
-        errdefer self.gl_context.deinit();
+        self.gl_context = gl_context;
 
-        self.surface = try WlrSurface.createEgl(allocator, &self.gl_context, compositor, layer_shell, fractional_scale_manager, viewporter, output, custom_resolution);
+        self.surface = try WlrSurface.createEgl(allocator, self.gl_context, compositor, layer_shell, fractional_scale_manager, viewporter, output, custom_resolution);
         errdefer self.surface.deinit();
 
         try self.surface.makeCurrent();
@@ -876,7 +875,6 @@ const Paper = struct {
         self.shader.destroy(self.allocator);
         self.global_attributes.deinit();
         self.surface.deinit();
-        self.gl_context.deinit();
         if (self.next_frame_strategy == .Vsync) {
             self.next_frame_strategy.Vsync.destroy();
         }
@@ -947,6 +945,9 @@ pub fn main() !u8 {
 
     defer global_output_configs.deinit(allocator);
 
+    var shared_gl_context = try GLContext.init(allocator, display);
+    defer shared_gl_context.deinit();
+
     if (global_output_configs.items.len == 0) {
         // No specific outputs requested, use all available outputs with native settings.
         for (registry_listener.outputs.items) |output| {
@@ -1000,7 +1001,7 @@ pub fn main() !u8 {
 
         const paper = try Paper.create(
             allocator,
-            display,
+            &shared_gl_context,
             compositor,
             layer_shell,
             registry_listener.fractional_scale_manager_v1,
