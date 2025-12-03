@@ -333,6 +333,8 @@ const WlrSurface = struct {
     /// The custom resolution to use for the surface set by the user. If set,
     /// overrides the output resolution.
     custom_resolution: ?Resolution = null,
+    /// The render scale factor (default 1.0).
+    render_scale: f32 = 1.0,
 
     // --- Wayland Core ---
     /// The Wayland EGL window.
@@ -363,25 +365,28 @@ const WlrSurface = struct {
     config_dirty: bool = false,
 
     /// Create a wlroots surface with EGL for GPU rendering.
-    pub fn createEgl(allocator: Allocator, gl_context: *GLContext, compositor: *wl.Compositor, layer_shell: *zwlr.LayerShellV1, fractional_scale_manager: ?*wp.FractionalScaleManagerV1, viewporter: ?*wp.Viewporter, output: *Output, custom_resolution: ?Resolution) !*WlrSurface {
+    pub fn createEgl(allocator: Allocator, gl_context: *GLContext, compositor: *wl.Compositor, layer_shell: *zwlr.LayerShellV1, fractional_scale_manager: ?*wp.FractionalScaleManagerV1, viewporter: ?*wp.Viewporter, output: *Output, custom_resolution: ?Resolution, render_scale: f32) !*WlrSurface {
         const self = try allocator.create(WlrSurface);
         errdefer allocator.destroy(self);
 
         self.allocator = allocator;
         self.output = output;
         self.gl_context = gl_context;
+        self.render_scale = render_scale;
 
-        self.width = output.width;
-        self.height = output.height;
-        self.scale = output.scale;
         self.destination_width = output.width;
         self.destination_height = output.height;
         self.custom_resolution = custom_resolution;
 
         if (custom_resolution) |resolution| {
-            self.width = resolution.width;
-            self.height = resolution.height;
+            self.destination_width = resolution.width;
+            self.destination_height = resolution.height;
         }
+        
+        // Scale buffer dimensions
+        self.width = @intFromFloat(@ceil(@as(f32, @floatFromInt(self.destination_width)) * render_scale));
+        self.height = @intFromFloat(@ceil(@as(f32, @floatFromInt(self.destination_height)) * render_scale));
+        self.scale = output.scale; // Initial scale guess, will be refined in handleConfiguration or by fractional scale
 
         self.wl_surface = try compositor.createSurface();
         errdefer self.wl_surface.destroy();
@@ -508,8 +513,11 @@ const WlrSurface = struct {
 
         if (self.fractional_scale) |fs| {
             // With fractional scaling, buffer size is logical size * fractional scale.
-            buffer_width = fs.scaleSize(logical_width);
-            buffer_height = fs.scaleSize(logical_height);
+            // We then apply our custom render scale on top of that.
+            const fs_width = fs.scaleSize(logical_width);
+            const fs_height = fs.scaleSize(logical_height);
+            buffer_width = @intFromFloat(@ceil(@as(f32, @floatFromInt(fs_width)) * self.render_scale));
+            buffer_height = @intFromFloat(@ceil(@as(f32, @floatFromInt(fs_height)) * self.render_scale));
             buffer_scale = 1;
         } else {
             // With integer scaling:
@@ -529,9 +537,11 @@ const WlrSurface = struct {
                 logical_width = output_width / self.output.scale;
                 logical_height = output_height / self.output.scale;
             }
-            // Buffer size is logical * integer scale
-            buffer_width = logical_width * self.output.scale;
-            buffer_height = logical_height * self.output.scale;
+            // Buffer size is logical * integer scale * render_scale
+            const raw_buffer_width = logical_width * self.output.scale;
+            const raw_buffer_height = logical_height * self.output.scale;
+            buffer_width = @intFromFloat(@ceil(@as(f32, @floatFromInt(raw_buffer_width)) * self.render_scale));
+            buffer_height = @intFromFloat(@ceil(@as(f32, @floatFromInt(raw_buffer_height)) * self.render_scale));
             buffer_scale = @intCast(self.output.scale);
         }
 
@@ -707,6 +717,7 @@ const OutputConfig = struct {
     id: []const u8,
     resolution: ?Resolution = null,
     frame_rate: ?u32 = null,
+    scale: ?f32 = null,
 };
 
 // Global storage for output configurations parsed from CLI
@@ -744,7 +755,7 @@ fn parseResolution(s: []const u8) !Resolution {
 }
 
 fn parseOutputConfigString(allocator: Allocator, s: []const u8) !OutputConfig {
-    var config: OutputConfig = .{ .id = undefined, .resolution = null, .frame_rate = null };
+    var config: OutputConfig = .{ .id = undefined, .resolution = null, .frame_rate = null, .scale = null };
     var it = std.mem.splitScalar(u8, s, ',');
     while (it.next()) |pair| {
         var pair_it = std.mem.splitScalar(u8, pair, '=');
@@ -762,6 +773,11 @@ fn parseOutputConfigString(allocator: Allocator, s: []const u8) !OutputConfig {
                 error.Overflow => return error.FrameRateOverflow,
             };
             if (config.frame_rate.? == 0) return error.FrameRateMustBePositive;
+        } else if (std.mem.eql(u8, key, "scale")) {
+            config.scale = std.fmt.parseFloat(f32, value) catch |err| switch (err) {
+                error.InvalidCharacter => return error.InvalidScaleValue,
+            };
+            if (config.scale.? <= 0.0) return error.ScaleMustBePositive;
         } else {
             return error.UnknownOutputConfigKey;
         }
@@ -787,8 +803,8 @@ pub fn printUsage() !void {
         \\                    fragment shader that is compatible with the Shadertoy API.
         \\Options:
         \\  --output <config>  Configure individual outputs. Can be specified multiple times.
-        \\                     Format: "id=<name>[,resolution=<WxH>][,frame-rate=<fps>]"
-        \\                     Example: --output "id=DP-1,resolution=1920x1080,frame-rate=60"
+        \\                     Format: "id=<name>[,resolution=<WxH>][,frame-rate=<fps>][,scale=<float>]"
+        \\                     Example: --output "id=DP-1,resolution=1920x1080,frame-rate=60,scale=0.5"
         \\                     If not specified, renders on all available outputs with native settings.
         \\  --help             Show this help message
         \\
@@ -835,6 +851,7 @@ const Paper = struct {
         custom_resolution: ?Resolution,
         shader_source: []const u8,
         target_frame_rate: ?u32, // Now optional
+        render_scale: ?f32,
     ) !*Paper {
         const self = try allocator.create(Paper);
         errdefer allocator.destroy(self);
@@ -842,7 +859,17 @@ const Paper = struct {
         self.allocator = allocator;
         self.gl_context = gl_context;
 
-        self.surface = try WlrSurface.createEgl(allocator, self.gl_context, compositor, layer_shell, fractional_scale_manager, viewporter, output, custom_resolution);
+        self.surface = try WlrSurface.createEgl(
+            allocator,
+            self.gl_context,
+            compositor,
+            layer_shell,
+            fractional_scale_manager,
+            viewporter,
+            output,
+            custom_resolution,
+            render_scale orelse 1.0
+        );
         errdefer self.surface.deinit();
 
         try self.surface.makeCurrent();
@@ -1010,13 +1037,15 @@ pub fn main() !u8 {
             target_resolution,
             shader_source,
             target_fps,
+            output_config.scale,
         );
         try papers.append(allocator, paper);
-        std.log.info("Rendering on output: {s} (resolution: {}x{}, frame-rate: {})", .{
+        std.log.info("Rendering on output: {s} (resolution: {}x{}, frame-rate: {}, scale: {d:.2})", .{
             output.name.?,
             paper.surface.destination_width,
             paper.surface.destination_height,
             target_fps,
+            paper.surface.render_scale,
         });
     }
 
@@ -1061,9 +1090,12 @@ pub fn main() !u8 {
             try paper.surface.makeCurrent();
 
             if (try paper.surface.handleConfiguration()) {
-                paper.shader.resolution = .{ .width = paper.surface.width, .height = paper.surface.height };
-                gl.viewport(0, 0, paper.surface.width, paper.surface.height);
+                // Resolution changed
             }
+            // Update viewport and resolution uniforms every frame because we share the GL context
+            // and the previous render might have changed these.
+            paper.shader.resolution = .{ .width = paper.surface.width, .height = paper.surface.height };
+            gl.viewport(0, 0, paper.surface.width, paper.surface.height);
 
             paper.global_attributes.bind();
             try paper.shader.render();
