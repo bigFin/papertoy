@@ -222,21 +222,104 @@ const RegistryListener = struct {
     }
 };
 
-/// A wlroots surface object. This is used for the wlroots shell layer to display a surface.
-const WlrSurface = struct {
+/// Wrapper around a Wayland EGL context.
+const GLContext = struct {
     allocator: Allocator,
 
-    // --- EGL ---
     /// The EGL display handle.
     egl_display: egl.EGLDisplay,
     /// The configuration chosen for EGL.
     egl_config: egl.EGLConfig,
     /// The EGL context handle.
     egl_context: egl.EGLContext,
-    /// The EGL surface created for the window.
-    egl_surface: egl.EGLSurface,
 
-    // --- State ---
+    pub fn init(allocator: Allocator, display: *wl.Display) !GLContext {
+        var self: GLContext = .{
+            .allocator = allocator,
+            .egl_display = egl.eglGetPlatformDisplay(egl.EGL_PLATFORM_WAYLAND_KHR, display, null),
+            .egl_config = undefined,
+            .egl_context = undefined,
+        };
+
+        var egl_major: egl.EGLint = 0;
+        var egl_minor: egl.EGLint = 0;
+        if (egl.eglInitialize(self.egl_display, &egl_major, &egl_minor) == egl.EGL_TRUE) {
+            std.log.debug("EGL version {}.{}", .{ egl_major, egl_minor });
+        } else switch (egl.eglGetError()) {
+            egl.EGL_BAD_DISPLAY => return error.EglBadDisplay,
+            else => return error.EglUnknownError,
+        }
+
+        self.egl_config = egl_config: {
+            // zig fmt: off
+            const egl_attributes = [_:egl.EGL_NONE]egl.EGLint{
+                egl.EGL_SURFACE_TYPE,    egl.EGL_WINDOW_BIT,
+                egl.EGL_RENDERABLE_TYPE, egl.EGL_OPENGL_BIT,
+                egl.EGL_RED_SIZE,        8,
+                egl.EGL_GREEN_SIZE,      8,
+                egl.EGL_BLUE_SIZE,       8,
+                egl.EGL_ALPHA_SIZE,      8,
+            };
+            // zig fmt: on
+
+            var egl_config: egl.EGLConfig = null;
+            var egl_config_count: egl.EGLint = 0;
+            if (egl.eglChooseConfig(self.egl_display, &egl_attributes, &egl_config, 1, &egl_config_count) == egl.EGL_TRUE) {
+                std.log.debug("EGL config count: {}", .{egl_config_count});
+            } else switch (egl.eglGetError()) {
+                egl.EGL_BAD_ATTRIBUTE => return error.EglBadAttribute,
+                else => return error.EglUnknownError,
+            }
+
+            break :egl_config egl_config;
+        };
+
+        if (egl.eglBindAPI(egl.EGL_OPENGL_API) != egl.EGL_TRUE) {
+            switch (egl.eglGetError()) {
+                egl.EGL_BAD_PARAMETER => return error.EglOpenglUnsupported,
+                else => return error.EglUnknownError,
+            }
+        }
+
+        self.egl_context = egl_context: {
+            const config_attributes = [_:egl.EGL_NONE]egl.EGLint{
+                egl.EGL_CONTEXT_MAJOR_VERSION, 3,
+                egl.EGL_CONTEXT_MINOR_VERSION, 3,
+            };
+
+            break :egl_context egl.eglCreateContext(self.egl_display, self.egl_config, egl.EGL_NO_CONTEXT, &config_attributes) orelse switch (egl.eglGetError()) {
+                egl.EGL_BAD_ATTRIBUTE => return error.InvalidContextAttribute,
+                egl.EGL_BAD_CONTEXT => return error.EglBadContext,
+                egl.EGL_BAD_MATCH => return error.UnsupportedConfig,
+                else => return error.EglUnknownError,
+            };
+        };
+
+        try gl.loadExtensions({}, getProcAddress);
+
+        return self;
+    }
+
+    pub fn deinit(self: *GLContext) void {
+        _ = egl.eglDestroyContext(self.egl_display, self.egl_context);
+        _ = egl.eglTerminate(self.egl_display);
+    }
+
+    fn getProcAddress(ctx: void, name: [:0]const u8) ?gl.binding.FunctionPointer {
+        _ = ctx;
+        return egl.eglGetProcAddress(name);
+    }
+};
+
+/// A wlroots surface object. This is used for the wlroots shell layer to display a surface.
+const WlrSurface = struct {
+    allocator: Allocator,
+
+        // --- EGL ---
+        /// The shared OpenGL context.
+        gl_context: *GLContext,
+        /// The EGL surface created for the window.
+        egl_surface: egl.EGLSurface,    // --- State ---
     /// The current width of the surface.
     width: u32 = undefined,
     /// The current height of the surface.
@@ -280,12 +363,13 @@ const WlrSurface = struct {
     config_dirty: bool = false,
 
     /// Create a wlroots surface with EGL for GPU rendering.
-    pub fn createEgl(allocator: Allocator, display: *wl.Display, compositor: *wl.Compositor, layer_shell: *zwlr.LayerShellV1, fractional_scale_manager: ?*wp.FractionalScaleManagerV1, viewporter: ?*wp.Viewporter, output: *Output, custom_resolution: ?Resolution) !*WlrSurface {
+    pub fn createEgl(allocator: Allocator, gl_context: *GLContext, compositor: *wl.Compositor, layer_shell: *zwlr.LayerShellV1, fractional_scale_manager: ?*wp.FractionalScaleManagerV1, viewporter: ?*wp.Viewporter, output: *Output, custom_resolution: ?Resolution) !*WlrSurface {
         const self = try allocator.create(WlrSurface);
         errdefer allocator.destroy(self);
 
         self.allocator = allocator;
         self.output = output;
+        self.gl_context = gl_context;
 
         self.width = output.width;
         self.height = output.height;
@@ -299,12 +383,6 @@ const WlrSurface = struct {
             self.height = resolution.height;
         }
 
-        try self.initEgl(display);
-        errdefer {
-            _ = egl.eglDestroySurface(self.egl_display, self.egl_surface);
-            _ = egl.eglTerminate(self.egl_display);
-        }
-
         self.wl_surface = try compositor.createSurface();
         errdefer self.wl_surface.destroy();
 
@@ -312,8 +390,8 @@ const WlrSurface = struct {
         errdefer self.wl_egl_window.destroy();
 
         self.egl_surface = egl.eglCreatePlatformWindowSurface(
-            self.egl_display,
-            self.egl_config,
+            self.gl_context.egl_display,
+            self.gl_context.egl_config,
             @ptrCast(self.wl_egl_window),
             null,
         ) orelse switch (egl.eglGetError()) {
@@ -322,7 +400,7 @@ const WlrSurface = struct {
             egl.EGL_BAD_NATIVE_WINDOW => return error.InvalidNativeWindow,
             else => return error.FailedToCreateSurface,
         };
-        errdefer _ = egl.eglDestroySurface(self.egl_display, self.egl_surface);
+        errdefer _ = egl.eglDestroySurface(self.gl_context.egl_display, self.egl_surface);
 
         self.wlr_surface = try layer_shell.getLayerSurface(self.wl_surface, output.output, .background, "papertoy");
         errdefer self.wlr_surface.destroy();
@@ -354,15 +432,13 @@ const WlrSurface = struct {
 
         // Roundtrip once to sync the configuration.
         self.wl_surface.commit();
-        if (display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
 
         return self;
     }
 
     /// Deinitialize the wlroots surface.
     pub fn deinit(self: *WlrSurface) void {
-        _ = egl.eglDestroyContext(self.egl_display, self.egl_context);
-        _ = egl.eglTerminate(self.egl_display);
+        _ = egl.eglDestroySurface(self.gl_context.egl_display, self.egl_surface);
         if (self.fractional_scale) |scale| scale.destroy(self.allocator);
         if (self.viewport) |viewport| viewport.destroy();
         self.allocator.destroy(self);
@@ -370,7 +446,7 @@ const WlrSurface = struct {
 
     /// Make the EGL context current.
     fn makeCurrent(self: *WlrSurface) !void {
-        if (egl.eglMakeCurrent(self.egl_display, self.egl_surface, self.egl_surface, self.egl_context) != egl.EGL_TRUE) {
+        if (egl.eglMakeCurrent(self.gl_context.egl_display, self.egl_surface, self.egl_surface, self.gl_context.egl_context) != egl.EGL_TRUE) {
             switch (egl.eglGetError()) {
                 egl.EGL_BAD_ACCESS => return error.EglThreadError,
                 egl.EGL_BAD_MATCH => return error.MismatchedContextOrSurfaces,
@@ -384,7 +460,7 @@ const WlrSurface = struct {
 
     /// Swap the EGL buffers.
     fn swapBuffers(self: *WlrSurface) !void {
-        if (egl.eglSwapBuffers(self.egl_display, self.egl_surface) != egl.EGL_TRUE) {
+        if (egl.eglSwapBuffers(self.gl_context.egl_display, self.egl_surface) != egl.EGL_TRUE) {
             switch (egl.eglGetError()) {
                 egl.EGL_BAD_DISPLAY => return error.InvalidDisplay,
                 egl.EGL_BAD_SURFACE => return error.PresentInvalidSurface,
@@ -485,7 +561,6 @@ const WlrSurface = struct {
             viewport.setDestination(@intCast(self.destination_width), @intCast(self.destination_height));
         }
 
-        self.wl_surface.commit();
         return true;
     }
 
@@ -746,6 +821,8 @@ const Paper = struct {
     render_frame: bool = false,
     /// The strategy used to determine when to render the next frame (Vsync or Custom).
     next_frame_strategy: NextFrameStrategy,
+    /// The GLContext for this paper.
+    gl_context: GLContext,
 
     pub fn create(
         allocator: Allocator,
@@ -763,7 +840,10 @@ const Paper = struct {
         errdefer allocator.destroy(self);
 
         self.allocator = allocator;
-        self.surface = try WlrSurface.createEgl(allocator, display, compositor, layer_shell, fractional_scale_manager, viewporter, output, custom_resolution);
+        self.gl_context = try GLContext.init(allocator, display);
+        errdefer self.gl_context.deinit();
+
+        self.surface = try WlrSurface.createEgl(allocator, &self.gl_context, compositor, layer_shell, fractional_scale_manager, viewporter, output, custom_resolution);
         errdefer self.surface.deinit();
 
         try self.surface.makeCurrent();
@@ -796,6 +876,7 @@ const Paper = struct {
         self.shader.destroy(self.allocator);
         self.global_attributes.deinit();
         self.surface.deinit();
+        self.gl_context.deinit();
         if (self.next_frame_strategy == .Vsync) {
             self.next_frame_strategy.Vsync.destroy();
         }
