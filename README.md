@@ -45,11 +45,39 @@ $ zig-out/bin/papertoy /path/to/shader.glsl
 > Currently, only shaders that don't use any channels are supported. This is
 > being worked on.
 
-Options:
+### Options
+
 - `--output <config>`: Configure individual outputs. Can be specified multiple times.
-  Format: "id=<name>[,resolution=<WxH>][,frame-rate=<fps>]"
-  Example: `--output "id=DP-1,resolution=1920x1080,frame-rate=60"`
-  If not specified, renders on all available outputs with native settings.
+  
+  **Format:** `id=<name>[,resolution=<WxH>][,frame-rate=<fps>][,scale=<float>]`
+  
+  **Parameters:**
+  - `id`: The name of the output (e.g., `DP-1`, `HDMI-A-1`). Run `swaymsg -t get_outputs` or similar to find yours.
+  - `resolution`: Force a specific logical resolution (e.g., `1920x1080`).
+  - `frame-rate`: Limit the frame rate (e.g., `30`, `60`). Defaults to the display's refresh rate.
+  - `scale`: Render at a fraction of the resolution and upscale (e.g., `0.5`). Great for performance.
+
+### Configuration Examples
+
+**1. Performance Mode (Recommended for 4K)**
+Render at half resolution (1080p on 4K) to save GPU power, but keep the window fullscreen.
+```console
+$ papertoy shader.glsl --output "id=HDMI-A-1,scale=0.5"
+```
+
+**2. Multi-Monitor Setup**
+Configure a high-refresh main monitor and a slower secondary monitor.
+```console
+$ papertoy shader.glsl \
+    --output "id=DP-1,frame-rate=144" \
+    --output "id=HDMI-A-1,scale=0.5,frame-rate=30"
+```
+
+**3. Custom Resolution**
+Force a specific aspect ratio or size.
+```console
+$ papertoy shader.glsl --output "id=DP-1,resolution=800x600"
+```
 
 ## Build
 
