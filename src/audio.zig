@@ -223,6 +223,11 @@ pub const AudioAnalyzer = struct {
         }
 
         self.active_target = self.allocator.dupe(u8, target) catch return;
+        if (self.requested_target) |_| {
+            std.log.info("audio-reactive target: {s} (manual)", .{self.active_target.?});
+        } else {
+            std.log.info("audio-reactive target: {s} (auto)", .{self.active_target.?});
+        }
         self.startPipeWire(self.active_target.?) catch |err| {
             std.log.warn("failed to start audio-reactive capture via PipeWire for target '{s}': {}; continuing with inactive audio inputs", .{ self.active_target.?, err });
             self.allocator.free(self.active_target.?);
@@ -235,10 +240,15 @@ pub const AudioAnalyzer = struct {
         errdefer self.allocator.destroy(shared);
         shared.* = .{};
 
+        const target_object_property = try std.fmt.allocPrint(self.allocator, "target.object={s}", .{target});
+        defer self.allocator.free(target_object_property);
+
         const argv = [_][]const u8{
             "pw-record",
-            "--target",
-            target,
+            "-P",
+            "stream.capture.sink=true",
+            "-P",
+            target_object_property,
             "--raw",
             "--rate",
             "48000",
