@@ -204,6 +204,17 @@ pub const AudioAnalyzer = struct {
         return .{};
     }
 
+    pub fn activeTarget(self: *const AudioAnalyzer) ?[]const u8 {
+        return self.active_target;
+    }
+
+    pub fn captureModeLabel(self: *const AudioAnalyzer) []const u8 {
+        return switch (self.capture_mode) {
+            .sink => "sink-monitor",
+            .source => "microphone/source",
+        };
+    }
+
     fn refresh(self: *AudioAnalyzer, force: bool) void {
         if (!self.enabled) return;
 
@@ -345,13 +356,6 @@ pub const AudioAnalyzer = struct {
     fn nowNs() !u64 {
         const now = try std.time.Instant.now();
         return now.since(std.mem.zeroes(std.time.Instant));
-    }
-
-    fn captureModeLabel(self: *const AudioAnalyzer) []const u8 {
-        return switch (self.capture_mode) {
-            .sink => "sink-monitor",
-            .source => "microphone/source",
-        };
     }
 
     fn captureMain(shared: *SharedState, stdout: std.fs.File) void {

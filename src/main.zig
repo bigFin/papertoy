@@ -599,6 +599,7 @@ const Options = struct {
     @"audio-capture": ?[]const u8 = null,
     @"audio-time-reactive": bool = false,
     @"audio-time-strength": ?f32 = null,
+    @"audio-debug": bool = false,
     help: bool = false,
 };
 
@@ -625,6 +626,7 @@ pub fn printUsage() !void {
         \\  --audio-target <n> Set the PipeWire capture target node name or serial
         \\  --audio-time-reactive  Modulate iTime using audio energy for unmodified shaders
         \\  --audio-time-strength <f> Set the strength of audio time modulation (default: 1.35)
+        \\  --audio-debug      Print live audio analyzer values to the terminal
         \\  --help             Show this help message
         \\
     );
@@ -810,6 +812,7 @@ pub fn main() !u8 {
 
     var next_frame_time: u64 = 0;
     var render_frame: bool = false;
+    var next_audio_debug_ns: u64 = 0;
 
     while (true) {
         if (try surface.synchronizeOutputChanges(display)) {
@@ -848,7 +851,13 @@ pub fn main() !u8 {
         next_frame_time = now_ns + expected_frame_time_ns;
 
         audio_analyzer.update();
-        try shader.render(audio_analyzer.snapshot());
+        const audio_snapshot = audio_analyzer.snapshot();
+        if (options.options.@"audio-debug" and now_ns >= next_audio_debug_ns) {
+            logAudioDebug(&audio_analyzer, audio_snapshot);
+            next_audio_debug_ns = now_ns + std.time.ns_per_s;
+        }
+
+        try shader.render(audio_snapshot);
         try surface.swapBuffers();
     }
 
@@ -862,4 +871,25 @@ fn setRenderFrame(callback: *wl.Callback, event: wl.Callback.Event, render_frame
             render_frame.* = true;
         },
     }
+}
+
+fn logAudioDebug(audio_analyzer: *const AudioAnalyzer, snapshot: @import("audio.zig").Snapshot) void {
+    const target = audio_analyzer.activeTarget() orelse "(none)";
+    std.log.info(
+        "audio-debug mode={s} target={s} active={d:.0} level={d:.2} bass={d:.2} mid={d:.2} treble={d:.2} beat={d:.2} impact={d:.2} energy={d:.2} drive={d:.2} brightness={d:.2}",
+        .{
+            audio_analyzer.captureModeLabel(),
+            target,
+            snapshot.active,
+            snapshot.level,
+            snapshot.bass,
+            snapshot.mid,
+            snapshot.treble,
+            snapshot.beat,
+            snapshot.impact,
+            snapshot.energy,
+            snapshot.drive,
+            snapshot.brightness,
+        },
+    );
 }
