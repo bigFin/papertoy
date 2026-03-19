@@ -11,6 +11,7 @@ const wayland = @import("wayland");
 const zig_args = @import("zig-args");
 
 const AudioAnalyzer = @import("audio.zig").AudioAnalyzer;
+const CaptureMode = @import("audio.zig").CaptureMode;
 const Shader = @import("shader.zig").Shader;
 const GlobalAttributes = @import("shader.zig").GlobalAttributes;
 const TimeModulation = @import("shader.zig").TimeModulation;
@@ -595,6 +596,7 @@ const Options = struct {
     resolution: ?[]const u8 = null,
     @"audio-reactive": bool = false,
     @"audio-target": ?[]const u8 = null,
+    @"audio-capture": ?[]const u8 = null,
     @"audio-time-reactive": bool = false,
     @"audio-time-strength": ?f32 = null,
     help: bool = false,
@@ -619,6 +621,7 @@ pub fn printUsage() !void {
         \\  --frame-rate <fps> Set a custom frame rate for the shader (default: vsync)
         \\  --resolution <WxH> Set the resolution of the shader (default: output resolution)
         \\  --audio-reactive   Enable audio-reactive shader inputs from PipeWire
+        \\  --audio-capture <mode> Capture mode: sink (default) or source
         \\  --audio-target <n> Set the PipeWire capture target node name or serial
         \\  --audio-time-reactive  Modulate iTime using audio energy for unmodified shaders
         \\  --audio-time-strength <f> Set the strength of audio time modulation (default: 1.35)
@@ -630,6 +633,12 @@ pub fn printUsage() !void {
 fn handleArgsError(err: zig_args.Error) !void {
     std.log.err("failed parsing command line arguments: {f}", .{err});
     try printUsage();
+}
+
+fn parseCaptureMode(mode: []const u8) !CaptureMode {
+    if (std.mem.eql(u8, mode, "sink")) return .sink;
+    if (std.mem.eql(u8, mode, "source")) return .source;
+    return error.InvalidCaptureMode;
 }
 
 pub fn main() !u8 {
@@ -771,6 +780,13 @@ pub fn main() !u8 {
     var audio_analyzer = AudioAnalyzer.init(allocator, .{
         .enabled = options.options.@"audio-reactive" or options.options.@"audio-time-reactive",
         .target = options.options.@"audio-target",
+        .capture_mode = if (options.options.@"audio-capture") |mode|
+            parseCaptureMode(mode) catch {
+                std.log.err("audio capture mode must be 'sink' or 'source', got {s}", .{mode});
+                return 1;
+            }
+        else
+            .sink,
     });
     defer audio_analyzer.deinit();
 

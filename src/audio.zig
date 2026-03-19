@@ -18,6 +18,12 @@ pub const Snapshot = struct {
 pub const Config = struct {
     enabled: bool = false,
     target: ?[]const u8 = null,
+    capture_mode: CaptureMode = .sink,
+};
+
+pub const CaptureMode = enum {
+    sink,
+    source,
 };
 
 const SharedState = struct {
@@ -156,6 +162,7 @@ pub const AudioAnalyzer = struct {
     allocator: Allocator,
     enabled: bool = false,
     requested_target: ?[]const u8 = null,
+    capture_mode: CaptureMode = .sink,
     active_target: ?[]u8 = null,
     next_refresh_ns: u64 = 0,
     backend: ?CaptureBackend = null,
@@ -165,6 +172,7 @@ pub const AudioAnalyzer = struct {
             .allocator = allocator,
             .enabled = config.enabled,
             .requested_target = config.target,
+            .capture_mode = config.capture_mode,
         };
 
         if (!config.enabled) return self;
@@ -224,9 +232,9 @@ pub const AudioAnalyzer = struct {
 
         self.active_target = self.allocator.dupe(u8, target) catch return;
         if (self.requested_target) |_| {
-            std.log.info("audio-reactive target: {s} (manual)", .{self.active_target.?});
+            std.log.info("audio-reactive target: {s} ({s}, manual)", .{ self.active_target.?, self.captureModeLabel() });
         } else {
-            std.log.info("audio-reactive target: {s} (auto)", .{self.active_target.?});
+            std.log.info("audio-reactive target: {s} ({s}, auto)", .{ self.active_target.?, self.captureModeLabel() });
         }
         self.startPipeWire(self.active_target.?) catch |err| {
             std.log.warn("failed to start audio-reactive capture via PipeWire for target '{s}': {}; continuing with inactive audio inputs", .{ self.active_target.?, err });
@@ -246,9 +254,12 @@ pub const AudioAnalyzer = struct {
         const argv = [_][]const u8{
             "pw-record",
             "-P",
-            "stream.capture.sink=true",
-            "-P",
             target_object_property,
+            "-P",
+            switch (self.capture_mode) {
+                .sink => "stream.capture.sink=true",
+                .source => "stream.capture.sink=false",
+            },
             "--raw",
             "--rate",
             "48000",
@@ -298,9 +309,13 @@ pub const AudioAnalyzer = struct {
     }
 
     fn resolveDefaultTarget(self: *AudioAnalyzer) ![]u8 {
+        const default_object = switch (self.capture_mode) {
+            .sink => "@DEFAULT_AUDIO_SINK@",
+            .source => "@DEFAULT_AUDIO_SOURCE@",
+        };
         const result = try std.process.Child.run(.{
             .allocator = self.allocator,
-            .argv = &.{ "wpctl", "inspect", "@DEFAULT_AUDIO_SINK@" },
+            .argv = &.{ "wpctl", "inspect", default_object },
             .max_output_bytes = 64 * 1024,
         });
         defer self.allocator.free(result.stdout);
@@ -321,12 +336,22 @@ pub const AudioAnalyzer = struct {
             return self.allocator.dupe(u8, value[0..end]);
         }
 
-        return error.DefaultAudioSinkNotFound;
+        return switch (self.capture_mode) {
+            .sink => error.DefaultAudioSinkNotFound,
+            .source => error.DefaultAudioSourceNotFound,
+        };
     }
 
     fn nowNs() !u64 {
         const now = try std.time.Instant.now();
         return now.since(std.mem.zeroes(std.time.Instant));
+    }
+
+    fn captureModeLabel(self: *const AudioAnalyzer) []const u8 {
+        return switch (self.capture_mode) {
+            .sink => "sink-monitor",
+            .source => "microphone/source",
+        };
     }
 
     fn captureMain(shared: *SharedState, stdout: std.fs.File) void {
