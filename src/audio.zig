@@ -9,6 +9,10 @@ pub const Snapshot = struct {
     treble: f32 = 0,
     beat: f32 = 0,
     active: f32 = 0,
+    impact: f32 = 0,
+    energy: f32 = 0,
+    drive: f32 = 0,
+    brightness: f32 = 0,
 };
 
 pub const Config = struct {
@@ -38,6 +42,10 @@ const AnalyzerState = struct {
     beat: f32 = 0,
     level_baseline: f32 = 0,
     active_hold: f32 = 0,
+    energy_smooth: f32 = 0,
+    drive_smooth: f32 = 0,
+    impact_smooth: f32 = 0,
+    brightness_smooth: f32 = 0,
 
     fn update(self: *AnalyzerState, shared: *SharedState, bytes: []const u8) void {
         const frame_size = 4; // stereo s16le
@@ -88,6 +96,16 @@ const AnalyzerState = struct {
         const onset = @max(0.0, self.level_smooth - (self.level_baseline * 1.35));
         self.beat = @max(self.beat * 0.84, clamp01(onset * 6.0));
 
+        const impact = clamp01((self.bass_smooth * 0.75) + (self.beat * 1.15));
+        const energy = clamp01((self.level_smooth * 0.55) + (self.mid_smooth * 0.20) + (self.bass_smooth * 0.25));
+        const drive_target = clamp01((self.level_smooth * 0.35) + (self.bass_smooth * 0.35) + (self.mid_smooth * 0.30));
+        const brightness = clamp01((self.treble_smooth * 0.75) + (self.mid_smooth * 0.25));
+
+        self.impact_smooth = smooth(self.impact_smooth, impact, 0.45, 0.16);
+        self.energy_smooth = smooth(self.energy_smooth, energy, 0.20, 0.05);
+        self.drive_smooth = smooth(self.drive_smooth, drive_target, 0.08, 0.02);
+        self.brightness_smooth = smooth(self.brightness_smooth, brightness, 0.18, 0.06);
+
         if (self.level_smooth > 0.025 or self.beat > 0.05) {
             self.active_hold = 1.0;
         } else {
@@ -103,6 +121,10 @@ const AnalyzerState = struct {
             .treble = self.treble_smooth,
             .beat = self.beat,
             .active = if (self.active_hold > 0) 1 else 0,
+            .impact = self.impact_smooth,
+            .energy = self.energy_smooth,
+            .drive = self.drive_smooth,
+            .brightness = self.brightness_smooth,
         };
     }
 

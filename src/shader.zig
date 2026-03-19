@@ -58,6 +58,7 @@ const UniformData = extern struct {
     sample_rate: f32 align(4) = 1,
     audio_bands: [4]f32 align(16) = .{ 0, 0, 0, 0 },
     audio_state: [4]f32 align(16) = .{ 0, 0, 0, 0 },
+    audio_visualizer: [4]f32 align(16) = .{ 0, 0, 0, 0 },
 };
 
 /// Wrapper around the UBO for Shadertoy uniforms.
@@ -211,11 +212,8 @@ pub const Shader = struct {
         const base_total_time = total_ns / std.time.ns_per_s;
         const base_delta_time = delta_ns / std.time.ns_per_s;
         if (self.time_modulation.enabled) {
-            // Bias generic time modulation toward low-end rhythm rather than
-            // overall loudness so unmodified shaders pulse with kicks more than
-            // they jitter with vocals or treble detail.
-            const energy = (audio.bass * 0.9) + (audio.beat * 1.75) + (audio.level * 0.15);
-            const multiplier = 1.0 + (std.math.clamp(energy, 0, 2.5) * self.time_modulation.strength);
+            const excitement = (audio.impact * 1.1) + (audio.drive * 0.55) + (audio.energy * 0.25);
+            const multiplier = 1.0 + (std.math.clamp(excitement, 0, 2.5) * self.time_modulation.strength);
             const modulated_delta = base_delta_time * multiplier;
             self.shader_time += modulated_delta;
             self.uniforms.data.time = self.shader_time;
@@ -227,6 +225,7 @@ pub const Shader = struct {
         }
         self.uniforms.data.audio_bands = .{ audio.level, audio.bass, audio.mid, audio.treble };
         self.uniforms.data.audio_state = .{ audio.beat, audio.active, 0, 0 };
+        self.uniforms.data.audio_visualizer = .{ audio.impact, audio.energy, audio.drive, audio.brightness };
         self.uniforms.bind();
 
         self.last_rendered = now;
