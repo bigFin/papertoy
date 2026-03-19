@@ -16,6 +16,15 @@ pub const TimeModulation = struct {
 pub const VisualModulation = struct {
     enabled: bool = false,
     strength: f32 = 1.0,
+    style: VisualStyle = .blend,
+};
+
+pub const VisualStyle = enum(i32) {
+    blend = 0,
+    pulse = 1,
+    drift = 2,
+    strobe = 3,
+    heat = 4,
 };
 
 const VERTEX_SHADER_SOURCE =
@@ -37,13 +46,31 @@ const SHADERTOY_POSTAMBLE =
     \\    float warp = iAudioVisualWarp;
     \\    float glow = iAudioVisualGlow;
     \\    float energy = iAudioVisualEnergy;
+    \\    float style = iAudioVisualStyle.x;
     \\
     \\    float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
-    \\    color = mix(vec3(luma), color, 1.0 + glow * 0.45 + pulse * 0.25);
-    \\    color = ((color - 0.5) * (1.0 + pulse * 0.55 + energy * 0.20)) + 0.5;
-    \\    color += vec3(0.10, 0.06, 0.02) * pulse;
-    \\    color += vec3(0.03, 0.05, 0.09) * glow;
-    \\    color += vec3(0.02, 0.015, 0.01) * (energy * (1.0 - length(centered)));
+    \\    if (style < 0.5) {
+    \\        color = mix(vec3(luma), color, 1.0 + glow * 0.85 + pulse * 0.45);
+    \\        color = ((color - 0.5) * (1.0 + pulse * 1.10 + energy * 0.45)) + 0.5;
+    \\        color += vec3(0.18, 0.08, 0.03) * pulse;
+    \\        color += vec3(0.05, 0.10, 0.18) * glow;
+    \\        color += vec3(0.05, 0.035, 0.02) * (energy * (1.0 - length(centered)));
+    \\    } else if (style < 1.5) {
+    \\        color = ((color - 0.5) * (1.0 + pulse * 1.85 + energy * 0.50)) + 0.5;
+    \\        color += vec3(0.24, 0.12, 0.04) * pulse;
+    \\    } else if (style < 2.5) {
+    \\        color = mix(vec3(luma), color, 1.0 + glow * 1.05);
+    \\        color += vec3(0.04, 0.08, 0.18) * (glow + energy * 0.5);
+    \\        color = ((color - 0.5) * (1.0 + glow * 0.70)) + 0.5;
+    \\    } else if (style < 3.5) {
+    \\        float flash = smoothstep(0.35, 0.95, pulse);
+    \\        color = mix(color, vec3(max(luma, flash)), flash * 0.95);
+    \\        color = ((color - 0.5) * (1.0 + flash * 2.20)) + 0.5;
+    \\    } else {
+    \\        color += vec3(0.22, 0.06, 0.01) * (energy + pulse * 0.6);
+    \\        color = mix(vec3(luma * 0.9), color, 1.0 + glow * 0.65 + energy * 0.45);
+    \\        color = ((color - 0.5) * (1.0 + energy * 0.95)) + 0.5;
+    \\    }
     \\    return max(color, vec3(0.0));
     \\}
     \\
@@ -51,12 +78,25 @@ const SHADERTOY_POSTAMBLE =
     \\    vec2 centered = (fragCoord - (iResolution.xy * 0.5)) / max(iResolution.y, 1.0);
     \\    float pulse = iAudioVisualPulse;
     \\    float warp = iAudioVisualWarp;
-    \\    vec2 radial = centered * (pulse * 34.0);
+    \\    float energy = iAudioVisualEnergy;
+    \\    float style = iAudioVisualStyle.x;
+    \\    vec2 radial = centered * (pulse * 72.0);
     \\    vec2 swirl = vec2(
     \\        sin(iTime * 1.7 + centered.y * 9.0),
     \\        cos(iTime * 1.3 + centered.x * 9.0)
-    \\    ) * (warp * 16.0);
-    \\    return fragCoord + radial + swirl;
+    \\    ) * (warp * 34.0);
+    \\    vec2 zoom = centered * ((pulse + energy) * -48.0);
+    \\    if (style < 0.5) {
+    \\        return fragCoord + radial + swirl + zoom;
+    \\    } else if (style < 1.5) {
+    \\        return fragCoord + (centered * (pulse * 120.0)) + (centered * (energy * -84.0));
+    \\    } else if (style < 2.5) {
+    \\        return fragCoord + (swirl * 1.55) + (centered.yx * vec2(12.0, -12.0) * warp);
+    \\    } else if (style < 3.5) {
+    \\        return fragCoord + (centered * (pulse * 96.0));
+    \\    } else {
+    \\        return fragCoord + (centered * (energy * -36.0)) + (swirl * 0.75);
+    \\    }
     \\}
     \\
     \\void main() {
@@ -104,6 +144,7 @@ const UniformData = extern struct {
     audio_state: [4]f32 align(16) = .{ 0, 0, 0, 0 },
     audio_visualizer: [4]f32 align(16) = .{ 0, 0, 0, 0 },
     audio_visual_fx: [4]f32 align(16) = .{ 0, 0, 0, 0 },
+    audio_visual_style: [4]f32 align(16) = .{ 0, 0, 0, 0 },
 };
 
 /// Wrapper around the UBO for Shadertoy uniforms.
@@ -281,8 +322,10 @@ pub const Shader = struct {
                 std.math.clamp(audio.brightness * self.visual_modulation.strength * 0.75, 0, 1.2),
                 std.math.clamp(audio.energy * self.visual_modulation.strength * 0.65, 0, 1.0),
             };
+            self.uniforms.data.audio_visual_style = .{ @floatFromInt(@intFromEnum(self.visual_modulation.style)), 0, 0, 0 };
         } else {
             self.uniforms.data.audio_visual_fx = .{ 0, 0, 0, 0 };
+            self.uniforms.data.audio_visual_style = .{ 0, 0, 0, 0 };
         }
         self.uniforms.bind();
 

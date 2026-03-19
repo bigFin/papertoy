@@ -16,6 +16,7 @@ const Shader = @import("shader.zig").Shader;
 const GlobalAttributes = @import("shader.zig").GlobalAttributes;
 const TimeModulation = @import("shader.zig").TimeModulation;
 const VisualModulation = @import("shader.zig").VisualModulation;
+const VisualStyle = @import("shader.zig").VisualStyle;
 
 const egl = @cImport({
     @cDefine("WL_EGL_PLATFORM", "1");
@@ -602,6 +603,7 @@ const Options = struct {
     @"audio-time-strength": ?f32 = null,
     @"audio-visual-reactive": bool = false,
     @"audio-visual-strength": ?f32 = null,
+    @"audio-visual-style": ?[]const u8 = null,
     @"audio-debug": bool = false,
     help: bool = false,
 };
@@ -631,6 +633,7 @@ pub fn printUsage() !void {
         \\  --audio-time-strength <f> Set the strength of audio time modulation (default: 1.35)
         \\  --audio-visual-reactive  Apply generic audio-driven coordinate and color modulation
         \\  --audio-visual-strength <f> Set the strength of generic visual modulation (default: 1.0)
+        \\  --audio-visual-style <s> Visual style: blend (default), pulse, drift, strobe, heat
         \\  --audio-debug      Print live audio analyzer values to the terminal
         \\  --help             Show this help message
         \\
@@ -646,6 +649,15 @@ fn parseCaptureMode(mode: []const u8) !CaptureMode {
     if (std.mem.eql(u8, mode, "sink")) return .sink;
     if (std.mem.eql(u8, mode, "source")) return .source;
     return error.InvalidCaptureMode;
+}
+
+fn parseVisualStyle(style: []const u8) !VisualStyle {
+    if (std.mem.eql(u8, style, "blend")) return .blend;
+    if (std.mem.eql(u8, style, "pulse")) return .pulse;
+    if (std.mem.eql(u8, style, "drift")) return .drift;
+    if (std.mem.eql(u8, style, "strobe")) return .strobe;
+    if (std.mem.eql(u8, style, "heat")) return .heat;
+    return error.InvalidVisualStyle;
 }
 
 pub fn main() !u8 {
@@ -809,6 +821,14 @@ pub fn main() !u8 {
         return 1;
     }
 
+    const audio_visual_style = if (options.options.@"audio-visual-style") |style|
+        parseVisualStyle(style) catch {
+            std.log.err("audio visual style must be one of: blend, pulse, drift, strobe, heat; got {s}", .{style});
+            return 1;
+        }
+    else
+        .blend;
+
     const expected_frame_time_ns = @as(u64, std.time.ns_per_s) / target_frame_rate;
 
     var global_attributes = GlobalAttributes.init();
@@ -821,6 +841,7 @@ pub fn main() !u8 {
     }, .{
         .enabled = options.options.@"audio-visual-reactive",
         .strength = audio_visual_strength,
+        .style = audio_visual_style,
     });
     defer shader.destroy(allocator);
 
