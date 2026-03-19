@@ -13,6 +13,11 @@ pub const TimeModulation = struct {
     strength: f32 = 1.0,
 };
 
+pub const VisualModulation = struct {
+    enabled: bool = false,
+    strength: f32 = 1.0,
+};
+
 const VERTEX_SHADER_SOURCE =
     \\#version 330 core
     \\
@@ -23,6 +28,45 @@ const VERTEX_SHADER_SOURCE =
     \\}
 ;
 const SHADERTOY_PREAMBLE = @embedFile("shadertoy_preamble.glsl");
+const SHADERTOY_POSTAMBLE =
+    \\#undef mainImage
+    \\
+    \\vec3 papertoyApplyAudioVisuals(vec3 color, vec2 fragCoord) {
+    \\    vec2 centered = (fragCoord - (iResolution.xy * 0.5)) / max(iResolution.y, 1.0);
+    \\    float pulse = iAudioVisualPulse;
+    \\    float warp = iAudioVisualWarp;
+    \\    float glow = iAudioVisualGlow;
+    \\    float energy = iAudioVisualEnergy;
+    \\
+    \\    float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    \\    color = mix(vec3(luma), color, 1.0 + glow * 0.45 + pulse * 0.25);
+    \\    color = ((color - 0.5) * (1.0 + pulse * 0.55 + energy * 0.20)) + 0.5;
+    \\    color += vec3(0.10, 0.06, 0.02) * pulse;
+    \\    color += vec3(0.03, 0.05, 0.09) * glow;
+    \\    color += vec3(0.02, 0.015, 0.01) * (energy * (1.0 - length(centered)));
+    \\    return max(color, vec3(0.0));
+    \\}
+    \\
+    \\vec2 papertoyWarpAudioCoords(vec2 fragCoord) {
+    \\    vec2 centered = (fragCoord - (iResolution.xy * 0.5)) / max(iResolution.y, 1.0);
+    \\    float pulse = iAudioVisualPulse;
+    \\    float warp = iAudioVisualWarp;
+    \\    vec2 radial = centered * (pulse * 34.0);
+    \\    vec2 swirl = vec2(
+    \\        sin(iTime * 1.7 + centered.y * 9.0),
+    \\        cos(iTime * 1.3 + centered.x * 9.0)
+    \\    ) * (warp * 16.0);
+    \\    return fragCoord + radial + swirl;
+    \\}
+    \\
+    \\void main() {
+    \\    vec2 papertoyFragCoord = papertoyWarpAudioCoords(gl_FragCoord.xy);
+    \\    vec4 papertoyColor = vec4(0.0);
+    \\    papertoyUserMainImage(papertoyColor, papertoyFragCoord);
+    \\    papertoyColor.rgb = papertoyApplyAudioVisuals(papertoyColor.rgb, gl_FragCoord.xy);
+    \\    _fragColor = papertoyColor;
+    \\}
+;
 
 /// A resolution for a shader program, defined by its width and height.
 pub const Resolution = struct {
@@ -59,6 +103,7 @@ const UniformData = extern struct {
     audio_bands: [4]f32 align(16) = .{ 0, 0, 0, 0 },
     audio_state: [4]f32 align(16) = .{ 0, 0, 0, 0 },
     audio_visualizer: [4]f32 align(16) = .{ 0, 0, 0, 0 },
+    audio_visual_fx: [4]f32 align(16) = .{ 0, 0, 0, 0 },
 };
 
 /// Wrapper around the UBO for Shadertoy uniforms.
@@ -109,6 +154,8 @@ pub const Shader = struct {
     last_rendered: std.time.Instant = undefined,
     /// Optional audio-driven time modulation for existing iTime-based shaders.
     time_modulation: TimeModulation = .{},
+    /// Optional generic audio-driven visual modulation wrapper.
+    visual_modulation: VisualModulation = .{},
     /// The time value currently exposed to the shader.
     shader_time: f32 = 0,
 
@@ -120,7 +167,7 @@ pub const Shader = struct {
     };
 
     /// Create the shader program with the given source code and parameters.
-    pub fn create(allocator: Allocator, source: []const u8, resolution: Resolution, frame_rate: u32, time_modulation: TimeModulation) Error!*Shader {
+    pub fn create(allocator: Allocator, source: []const u8, resolution: Resolution, frame_rate: u32, time_modulation: TimeModulation, visual_modulation: VisualModulation) Error!*Shader {
         const vert = gl.Shader.create(.vertex);
         defer vert.delete();
         vert.source(1, &.{VERTEX_SHADER_SOURCE[0..]});
@@ -129,7 +176,7 @@ pub const Shader = struct {
         const frag = gl.Shader.create(.fragment);
         defer frag.delete();
         {
-            frag.source(2, &.{ SHADERTOY_PREAMBLE[0..], source });
+            frag.source(3, &.{ SHADERTOY_PREAMBLE[0..], source, SHADERTOY_POSTAMBLE[0..] });
             frag.compile();
 
             const frag_compiled = frag.get(.compile_status) == gl.binding.TRUE;
@@ -181,6 +228,7 @@ pub const Shader = struct {
             .resolution = resolution,
             .frame_rate = frame_rate,
             .time_modulation = time_modulation,
+            .visual_modulation = visual_modulation,
         };
 
         return self;
@@ -226,6 +274,16 @@ pub const Shader = struct {
         self.uniforms.data.audio_bands = .{ audio.level, audio.bass, audio.mid, audio.treble };
         self.uniforms.data.audio_state = .{ audio.beat, audio.active, 0, 0 };
         self.uniforms.data.audio_visualizer = .{ audio.impact, audio.energy, audio.drive, audio.brightness };
+        if (self.visual_modulation.enabled) {
+            self.uniforms.data.audio_visual_fx = .{
+                std.math.clamp(audio.impact * self.visual_modulation.strength, 0, 1.5),
+                std.math.clamp(audio.drive * self.visual_modulation.strength * 0.85, 0, 1.2),
+                std.math.clamp(audio.brightness * self.visual_modulation.strength * 0.75, 0, 1.2),
+                std.math.clamp(audio.energy * self.visual_modulation.strength * 0.65, 0, 1.0),
+            };
+        } else {
+            self.uniforms.data.audio_visual_fx = .{ 0, 0, 0, 0 };
+        }
         self.uniforms.bind();
 
         self.last_rendered = now;

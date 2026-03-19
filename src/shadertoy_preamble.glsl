@@ -16,6 +16,7 @@
     uniform vec4    iAudioBands;
     uniform vec4    iAudioState;
     uniform vec4    iAudioVisualizer;
+    uniform vec4    iAudioVisualFx;
 };
 
 // Currently unused since we don't have a texture to sample from
@@ -38,6 +39,9 @@ layout(location = 0) out vec4 _fragColor;
 #define iAudioEnergy iAudioVisualizer.y
 #define iAudioDrive iAudioVisualizer.z
 #define iAudioBrightness iAudioVisualizer.w
+#define iAudioVisualPulse iAudioVisualFx.x
+#define iAudioVisualWarp iAudioVisualFx.y
+#define iAudioVisualGlow iAudioVisualFx.z
+#define iAudioVisualEnergy iAudioVisualFx.w
 
-void mainImage(out vec4 fragColor, in vec2 fragCoord);
-void main() { mainImage (_fragColor, gl_FragCoord.xy); }
+#define mainImage papertoyUserMainImage

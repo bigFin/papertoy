@@ -15,6 +15,7 @@ const CaptureMode = @import("audio.zig").CaptureMode;
 const Shader = @import("shader.zig").Shader;
 const GlobalAttributes = @import("shader.zig").GlobalAttributes;
 const TimeModulation = @import("shader.zig").TimeModulation;
+const VisualModulation = @import("shader.zig").VisualModulation;
 
 const egl = @cImport({
     @cDefine("WL_EGL_PLATFORM", "1");
@@ -599,6 +600,8 @@ const Options = struct {
     @"audio-capture": ?[]const u8 = null,
     @"audio-time-reactive": bool = false,
     @"audio-time-strength": ?f32 = null,
+    @"audio-visual-reactive": bool = false,
+    @"audio-visual-strength": ?f32 = null,
     @"audio-debug": bool = false,
     help: bool = false,
 };
@@ -626,6 +629,8 @@ pub fn printUsage() !void {
         \\  --audio-target <n> Set the PipeWire capture target node name or serial
         \\  --audio-time-reactive  Modulate iTime using audio energy for unmodified shaders
         \\  --audio-time-strength <f> Set the strength of audio time modulation (default: 1.35)
+        \\  --audio-visual-reactive  Apply generic audio-driven coordinate and color modulation
+        \\  --audio-visual-strength <f> Set the strength of generic visual modulation (default: 1.0)
         \\  --audio-debug      Print live audio analyzer values to the terminal
         \\  --help             Show this help message
         \\
@@ -780,7 +785,7 @@ pub fn main() !u8 {
     }
 
     var audio_analyzer = AudioAnalyzer.init(allocator, .{
-        .enabled = options.options.@"audio-reactive" or options.options.@"audio-time-reactive",
+        .enabled = options.options.@"audio-reactive" or options.options.@"audio-time-reactive" or options.options.@"audio-visual-reactive",
         .target = options.options.@"audio-target",
         .capture_mode = if (options.options.@"audio-capture") |mode|
             parseCaptureMode(mode) catch {
@@ -798,6 +803,12 @@ pub fn main() !u8 {
         return 1;
     }
 
+    const audio_visual_strength = options.options.@"audio-visual-strength" orelse 1.0;
+    if (audio_visual_strength < 0) {
+        std.log.err("audio visual strength must be non-negative, got {d}", .{audio_visual_strength});
+        return 1;
+    }
+
     const expected_frame_time_ns = @as(u64, std.time.ns_per_s) / target_frame_rate;
 
     var global_attributes = GlobalAttributes.init();
@@ -807,6 +818,9 @@ pub fn main() !u8 {
     const shader = try Shader.create(allocator, shader_source, .{ .width = surface.width, .height = surface.height }, target_frame_rate, .{
         .enabled = options.options.@"audio-time-reactive",
         .strength = audio_time_strength,
+    }, .{
+        .enabled = options.options.@"audio-visual-reactive",
+        .strength = audio_visual_strength,
     });
     defer shader.destroy(allocator);
 
