@@ -10,8 +10,10 @@ const gl = @import("zgl");
 const wayland = @import("wayland");
 const zig_args = @import("zig-args");
 
+const AudioAnalyzer = @import("audio.zig").AudioAnalyzer;
 const Shader = @import("shader.zig").Shader;
 const GlobalAttributes = @import("shader.zig").GlobalAttributes;
+const TimeModulation = @import("shader.zig").TimeModulation;
 
 const egl = @cImport({
     @cDefine("WL_EGL_PLATFORM", "1");
@@ -591,6 +593,10 @@ const Options = struct {
     output: ?[]const u8 = null,
     @"frame-rate": ?u32 = null,
     resolution: ?[]const u8 = null,
+    @"audio-reactive": bool = false,
+    @"audio-target": ?[]const u8 = null,
+    @"audio-time-reactive": bool = false,
+    @"audio-time-strength": ?f32 = null,
     help: bool = false,
 };
 
@@ -612,6 +618,10 @@ pub fn printUsage() !void {
         \\  --output <name>    Set the output to render the shader on (default: first available output)
         \\  --frame-rate <fps> Set a custom frame rate for the shader (default: vsync)
         \\  --resolution <WxH> Set the resolution of the shader (default: output resolution)
+        \\  --audio-reactive   Enable audio-reactive shader inputs from PipeWire
+        \\  --audio-target <n> Set the PipeWire capture target node name or serial
+        \\  --audio-time-reactive  Modulate iTime using audio energy for unmodified shaders
+        \\  --audio-time-strength <f> Set the strength of audio time modulation (default: 1.35)
         \\  --help             Show this help message
         \\
     );
@@ -758,13 +768,28 @@ pub fn main() !u8 {
         target_frame_rate = @intCast(frame_rate);
     }
 
+    var audio_analyzer = AudioAnalyzer.init(allocator, .{
+        .enabled = options.options.@"audio-reactive" or options.options.@"audio-time-reactive",
+        .target = options.options.@"audio-target",
+    });
+    defer audio_analyzer.deinit();
+
+    const audio_time_strength = options.options.@"audio-time-strength" orelse 1.35;
+    if (audio_time_strength < 0) {
+        std.log.err("audio time strength must be non-negative, got {d}", .{audio_time_strength});
+        return 1;
+    }
+
     const expected_frame_time_ns = @as(u64, std.time.ns_per_s) / target_frame_rate;
 
     var global_attributes = GlobalAttributes.init();
     defer global_attributes.deinit();
     global_attributes.bind();
 
-    const shader = try Shader.create(allocator, shader_source, .{ .width = surface.width, .height = surface.height }, target_frame_rate);
+    const shader = try Shader.create(allocator, shader_source, .{ .width = surface.width, .height = surface.height }, target_frame_rate, .{
+        .enabled = options.options.@"audio-time-reactive",
+        .strength = audio_time_strength,
+    });
     defer shader.destroy(allocator);
 
     var next_frame_time: u64 = 0;
@@ -806,7 +831,8 @@ pub fn main() !u8 {
 
         next_frame_time = now_ns + expected_frame_time_ns;
 
-        try shader.render();
+        audio_analyzer.update();
+        try shader.render(audio_analyzer.snapshot());
         try surface.swapBuffers();
     }
 

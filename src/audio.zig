@@ -1,0 +1,322 @@
+const std = @import("std");
+
+const Allocator = std.mem.Allocator;
+
+pub const Snapshot = struct {
+    level: f32 = 0,
+    bass: f32 = 0,
+    mid: f32 = 0,
+    treble: f32 = 0,
+    beat: f32 = 0,
+    active: f32 = 0,
+};
+
+pub const Config = struct {
+    enabled: bool = false,
+    target: ?[]const u8 = null,
+};
+
+const SharedState = struct {
+    mutex: std.Thread.Mutex = .{},
+    snapshot: Snapshot = .{},
+    terminated: bool = false,
+};
+
+const CaptureBackend = struct {
+    child: std.process.Child,
+    thread: std.Thread,
+    shared: *SharedState,
+};
+
+const AnalyzerState = struct {
+    low_lp: f32 = 0,
+    mid_lp: f32 = 0,
+    level_smooth: f32 = 0,
+    bass_smooth: f32 = 0,
+    mid_smooth: f32 = 0,
+    treble_smooth: f32 = 0,
+    beat: f32 = 0,
+    level_baseline: f32 = 0,
+    active_hold: f32 = 0,
+
+    fn update(self: *AnalyzerState, shared: *SharedState, bytes: []const u8) void {
+        const frame_size = 4; // stereo s16le
+        const usable_len = bytes.len - (bytes.len % frame_size);
+        if (usable_len == 0) return;
+
+        var level_energy: f32 = 0;
+        var bass_energy: f32 = 0;
+        var mid_energy: f32 = 0;
+        var treble_energy: f32 = 0;
+        var frame_count: usize = 0;
+
+        var i: usize = 0;
+        while (i < usable_len) : (i += frame_size) {
+            const left = sampleToFloat(bytes[i], bytes[i + 1]);
+            const right = sampleToFloat(bytes[i + 2], bytes[i + 3]);
+            const mono = 0.5 * (left + right);
+
+            self.low_lp += 0.025 * (mono - self.low_lp);
+            self.mid_lp += 0.18 * (mono - self.mid_lp);
+
+            const bass = self.low_lp;
+            const mid = self.mid_lp - self.low_lp;
+            const treble = mono - self.mid_lp;
+
+            level_energy += mono * mono;
+            bass_energy += bass * bass;
+            mid_energy += mid * mid;
+            treble_energy += treble * treble;
+            frame_count += 1;
+        }
+
+        if (frame_count == 0) return;
+        const sample_count: f32 = @floatFromInt(frame_count);
+
+        const level = normalizeRms(level_energy / sample_count, 4.0);
+        const bass = normalizeRms(bass_energy / sample_count, 6.0);
+        const mid = normalizeRms(mid_energy / sample_count, 6.0);
+        const treble = normalizeRms(treble_energy / sample_count, 8.0);
+
+        self.level_smooth = smooth(self.level_smooth, level, 0.35, 0.08);
+        self.bass_smooth = smooth(self.bass_smooth, bass, 0.35, 0.10);
+        self.mid_smooth = smooth(self.mid_smooth, mid, 0.35, 0.10);
+        self.treble_smooth = smooth(self.treble_smooth, treble, 0.35, 0.10);
+
+        self.level_baseline = (self.level_baseline * 0.985) + (self.level_smooth * 0.015);
+
+        const onset = @max(0.0, self.level_smooth - (self.level_baseline * 1.35));
+        self.beat = @max(self.beat * 0.84, clamp01(onset * 6.0));
+
+        if (self.level_smooth > 0.025 or self.beat > 0.05) {
+            self.active_hold = 1.0;
+        } else {
+            self.active_hold = @max(0.0, self.active_hold - 0.05);
+        }
+
+        shared.mutex.lock();
+        defer shared.mutex.unlock();
+        shared.snapshot = .{
+            .level = self.level_smooth,
+            .bass = self.bass_smooth,
+            .mid = self.mid_smooth,
+            .treble = self.treble_smooth,
+            .beat = self.beat,
+            .active = if (self.active_hold > 0) 1 else 0,
+        };
+    }
+
+    fn sampleToFloat(lo: u8, hi: u8) f32 {
+        const sample = @as(i16, @bitCast(@as(u16, lo) | (@as(u16, hi) << 8)));
+        return @as(f32, @floatFromInt(sample)) / 32768.0;
+    }
+
+    fn normalizeRms(mean_square: f32, gain: f32) f32 {
+        return clamp01(std.math.sqrt(mean_square) * gain);
+    }
+
+    fn smooth(current: f32, target: f32, attack: f32, release: f32) f32 {
+        const factor = if (target > current) attack else release;
+        return current + ((target - current) * factor);
+    }
+
+    fn clamp01(value: f32) f32 {
+        return std.math.clamp(value, 0, 1);
+    }
+};
+
+/// Render-facing API for audio-reactive state.
+///
+/// The current implementation reads raw PCM from `pw-record` in a background
+/// thread. If PipeWire capture cannot be started, the analyzer falls back to
+/// inactive audio inputs and the renderer continues normally.
+pub const AudioAnalyzer = struct {
+    allocator: Allocator,
+    enabled: bool = false,
+    requested_target: ?[]const u8 = null,
+    active_target: ?[]u8 = null,
+    next_refresh_ns: u64 = 0,
+    backend: ?CaptureBackend = null,
+
+    pub fn init(allocator: Allocator, config: Config) AudioAnalyzer {
+        var self = AudioAnalyzer{
+            .allocator = allocator,
+            .enabled = config.enabled,
+            .requested_target = config.target,
+        };
+
+        if (!config.enabled) return self;
+
+        self.refresh(true);
+
+        return self;
+    }
+
+    pub fn deinit(self: *AudioAnalyzer) void {
+        self.stopBackend();
+        if (self.active_target) |target| {
+            self.allocator.free(target);
+            self.active_target = null;
+        }
+    }
+
+    pub fn update(self: *AudioAnalyzer) void {
+        self.refresh(false);
+    }
+
+    pub fn snapshot(self: *const AudioAnalyzer) Snapshot {
+        if (self.backend) |backend| {
+            backend.shared.mutex.lock();
+            defer backend.shared.mutex.unlock();
+            return backend.shared.snapshot;
+        }
+
+        return .{};
+    }
+
+    fn refresh(self: *AudioAnalyzer, force: bool) void {
+        if (!self.enabled) return;
+
+        const now_ns = nowNs() catch return;
+        const backend_dead = self.backend == null or self.backendTerminated();
+        if (!force and !backend_dead and now_ns < self.next_refresh_ns) return;
+        self.next_refresh_ns = now_ns + (2 * std.time.ns_per_s);
+
+        const target = if (self.requested_target) |manual_target|
+            self.allocator.dupe(u8, manual_target) catch return
+        else
+            self.resolveDefaultTarget() catch |err| {
+                std.log.warn("failed to resolve default audio target: {}", .{err});
+                return;
+            };
+        defer self.allocator.free(target);
+
+        const target_changed = self.active_target == null or !std.mem.eql(u8, self.active_target.?, target);
+        if (!backend_dead and !target_changed) return;
+
+        self.stopBackend();
+        if (self.active_target) |active_target| {
+            self.allocator.free(active_target);
+            self.active_target = null;
+        }
+
+        self.active_target = self.allocator.dupe(u8, target) catch return;
+        self.startPipeWire(self.active_target.?) catch |err| {
+            std.log.warn("failed to start audio-reactive capture via PipeWire for target '{s}': {}; continuing with inactive audio inputs", .{ self.active_target.?, err });
+            self.allocator.free(self.active_target.?);
+            self.active_target = null;
+        };
+    }
+
+    fn startPipeWire(self: *AudioAnalyzer, target: []const u8) !void {
+        const shared = try self.allocator.create(SharedState);
+        errdefer self.allocator.destroy(shared);
+        shared.* = .{};
+
+        const argv = [_][]const u8{
+            "pw-record",
+            "--target",
+            target,
+            "--raw",
+            "--rate",
+            "48000",
+            "--channels",
+            "2",
+            "--format",
+            "s16",
+            "-",
+        };
+
+        var child = std.process.Child.init(&argv, self.allocator);
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Pipe;
+        child.stderr_behavior = .Inherit;
+        try child.spawn();
+        errdefer {
+            _ = child.kill() catch {};
+        }
+        try child.waitForSpawn();
+
+        const stdout = child.stdout orelse return error.MissingChildStdout;
+        child.stdout = null;
+
+        const thread = try std.Thread.spawn(.{}, captureMain, .{ shared, stdout });
+
+        self.backend = .{
+            .child = child,
+            .thread = thread,
+            .shared = shared,
+        };
+    }
+
+    fn stopBackend(self: *AudioAnalyzer) void {
+        if (self.backend) |*backend| {
+            _ = backend.child.kill() catch {};
+            backend.thread.join();
+            self.allocator.destroy(backend.shared);
+            self.backend = null;
+        }
+    }
+
+    fn backendTerminated(self: *const AudioAnalyzer) bool {
+        const backend = self.backend orelse return true;
+        backend.shared.mutex.lock();
+        defer backend.shared.mutex.unlock();
+        return backend.shared.terminated;
+    }
+
+    fn resolveDefaultTarget(self: *AudioAnalyzer) ![]u8 {
+        const result = try std.process.Child.run(.{
+            .allocator = self.allocator,
+            .argv = &.{ "wpctl", "inspect", "@DEFAULT_AUDIO_SINK@" },
+            .max_output_bytes = 64 * 1024,
+        });
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+
+        switch (result.term) {
+            .Exited => |code| if (code != 0) return error.WpctlFailed,
+            else => return error.WpctlFailed,
+        }
+
+        var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+        while (lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t\r");
+            if (!std.mem.startsWith(u8, trimmed, "* node.name = \"")) continue;
+
+            const value = trimmed["* node.name = \"".len..];
+            const end = std.mem.indexOfScalar(u8, value, '"') orelse continue;
+            return self.allocator.dupe(u8, value[0..end]);
+        }
+
+        return error.DefaultAudioSinkNotFound;
+    }
+
+    fn nowNs() !u64 {
+        const now = try std.time.Instant.now();
+        return now.since(std.mem.zeroes(std.time.Instant));
+    }
+
+    fn captureMain(shared: *SharedState, stdout: std.fs.File) void {
+        defer stdout.close();
+        defer {
+            shared.mutex.lock();
+            shared.snapshot = .{};
+            shared.terminated = true;
+            shared.mutex.unlock();
+        }
+
+        var analyzer: AnalyzerState = .{};
+        var buffer: [4096]u8 = undefined;
+
+        while (true) {
+            const bytes_read = stdout.read(&buffer) catch |err| {
+                std.log.warn("audio capture stream closed: {}", .{err});
+                return;
+            };
+            if (bytes_read == 0) return;
+
+            analyzer.update(shared, buffer[0..bytes_read]);
+        }
+    }
+};

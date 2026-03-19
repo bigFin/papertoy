@@ -6,6 +6,12 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const gl = @import("zgl");
+const AudioSnapshot = @import("audio.zig").Snapshot;
+
+pub const TimeModulation = struct {
+    enabled: bool = false,
+    strength: f32 = 1.0,
+};
 
 const VERTEX_SHADER_SOURCE =
     \\#version 330 core
@@ -50,6 +56,8 @@ const UniformData = extern struct {
     mouse: [4]f32 align(16) = .{ 0, 0, 0, 0 },
     date: [4]f32 align(16) = .{ 0, 0, 0, 0 },
     sample_rate: f32 align(4) = 1,
+    audio_bands: [4]f32 align(16) = .{ 0, 0, 0, 0 },
+    audio_state: [4]f32 align(16) = .{ 0, 0, 0, 0 },
 };
 
 /// Wrapper around the UBO for Shadertoy uniforms.
@@ -98,6 +106,10 @@ pub const Shader = struct {
     first_rendered: std.time.Instant = undefined,
     /// The last time the shader was rendered.
     last_rendered: std.time.Instant = undefined,
+    /// Optional audio-driven time modulation for existing iTime-based shaders.
+    time_modulation: TimeModulation = .{},
+    /// The time value currently exposed to the shader.
+    shader_time: f32 = 0,
 
     pub const Error = Allocator.Error || error{
         /// Failed to compile the shader.
@@ -107,7 +119,7 @@ pub const Shader = struct {
     };
 
     /// Create the shader program with the given source code and parameters.
-    pub fn create(allocator: Allocator, source: []const u8, resolution: Resolution, frame_rate: u32) Error!*Shader {
+    pub fn create(allocator: Allocator, source: []const u8, resolution: Resolution, frame_rate: u32, time_modulation: TimeModulation) Error!*Shader {
         const vert = gl.Shader.create(.vertex);
         defer vert.delete();
         vert.source(1, &.{VERTEX_SHADER_SOURCE[0..]});
@@ -167,6 +179,7 @@ pub const Shader = struct {
             }),
             .resolution = resolution,
             .frame_rate = frame_rate,
+            .time_modulation = time_modulation,
         };
 
         return self;
@@ -180,7 +193,7 @@ pub const Shader = struct {
     }
 
     /// Render the shader to the currently bound framebuffer.
-    pub fn render(self: *Shader) !void {
+    pub fn render(self: *Shader, audio: AudioSnapshot) !void {
         self.program.use();
 
         if (self.frame == 0) {
@@ -195,8 +208,25 @@ pub const Shader = struct {
         self.uniforms.data.resolution = .{ @floatFromInt(self.resolution.width), @floatFromInt(self.resolution.height), 0 };
         self.uniforms.data.frame_rate = @floatFromInt(self.frame_rate);
         self.uniforms.data.frame = @intCast(self.frame);
-        self.uniforms.data.time = total_ns / std.time.ns_per_s;
-        self.uniforms.data.time_delta = delta_ns / std.time.ns_per_s;
+        const base_total_time = total_ns / std.time.ns_per_s;
+        const base_delta_time = delta_ns / std.time.ns_per_s;
+        if (self.time_modulation.enabled) {
+            // Bias generic time modulation toward low-end rhythm rather than
+            // overall loudness so unmodified shaders pulse with kicks more than
+            // they jitter with vocals or treble detail.
+            const energy = (audio.bass * 0.9) + (audio.beat * 1.75) + (audio.level * 0.15);
+            const multiplier = 1.0 + (std.math.clamp(energy, 0, 2.5) * self.time_modulation.strength);
+            const modulated_delta = base_delta_time * multiplier;
+            self.shader_time += modulated_delta;
+            self.uniforms.data.time = self.shader_time;
+            self.uniforms.data.time_delta = modulated_delta;
+        } else {
+            self.shader_time = base_total_time;
+            self.uniforms.data.time = base_total_time;
+            self.uniforms.data.time_delta = base_delta_time;
+        }
+        self.uniforms.data.audio_bands = .{ audio.level, audio.bass, audio.mid, audio.treble };
+        self.uniforms.data.audio_state = .{ audio.beat, audio.active, 0, 0 };
         self.uniforms.bind();
 
         self.last_rendered = now;

@@ -13,6 +13,8 @@
     uniform vec4    iMouse;
     uniform vec4    iDate;
     uniform float   iSampleRate;
+    uniform vec4    iAudioBands;
+    uniform vec4    iAudioState;
 };
 
 // Currently unused since we don't have a texture to sample from
@@ -25,6 +27,12 @@
 layout(location = 0) out vec4 _fragColor;
 
 #define texture2D texture
+#define iAudioLevel iAudioBands.x
+#define iAudioBass iAudioBands.y
+#define iAudioMid iAudioBands.z
+#define iAudioTreble iAudioBands.w
+#define iAudioBeat iAudioState.x
+#define iAudioActive iAudioState.y
 
 void mainImage(out vec4 fragColor, in vec2 fragCoord);
 void main() { mainImage (_fragColor, gl_FragCoord.xy); }
