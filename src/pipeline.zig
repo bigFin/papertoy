@@ -3,15 +3,22 @@ const Allocator = std.mem.Allocator;
 
 const audio = @import("audio.zig");
 const AudioSnapshot = @import("audio.zig").Snapshot;
+const gl = @import("zgl");
 const shader = @import("shader.zig");
 
 pub const PassKind = enum {
     base,
+    postprocess,
+};
+
+pub const PostProcessEffect = enum(i32) {
+    pulse_zoom = 0,
 };
 
 pub const PassConfig = struct {
     kind: PassKind = .base,
-    source: []const u8,
+    source: ?[]const u8 = null,
+    effect: ?PostProcessEffect = null,
     time_modulation: shader.TimeModulation = .{},
     visual_modulation: shader.VisualModulation = .{},
 };
@@ -41,10 +48,41 @@ pub const PipelineConfig = struct {
             },
         };
     }
+
+    pub fn unified(
+        source: []const u8,
+        resolution: shader.Resolution,
+        frame_rate: u32,
+        time_modulation: shader.TimeModulation,
+        visual_modulation: shader.VisualModulation,
+        post_effect: ?PostProcessEffect,
+    ) PipelineConfig {
+        if (post_effect) |effect| {
+            return .{
+                .resolution = resolution,
+                .frame_rate = frame_rate,
+                .passes = &.{
+                    .{
+                        .kind = .base,
+                        .source = source,
+                        .time_modulation = time_modulation,
+                        .visual_modulation = visual_modulation,
+                    },
+                    .{
+                        .kind = .postprocess,
+                        .effect = effect,
+                    },
+                },
+            };
+        }
+
+        return legacy(source, resolution, frame_rate, time_modulation, visual_modulation);
+    }
 };
 
 pub const FileConfig = struct {
     base_path: []u8,
+    post_effect: ?PostProcessEffect = null,
     audio_enabled: bool = false,
     audio_target: ?[]u8 = null,
     audio_capture_mode: audio.CaptureMode = .sink,
@@ -60,8 +98,8 @@ pub const FileConfig = struct {
 pub const ParseError = error{
     MissingEnvironmentVariable,
     MissingBaseShader,
+    MissingPassEffect,
     MissingPassPath,
-    TooManyPasses,
     InvalidPipelineSyntax,
     InvalidPipelineSection,
     InvalidPipelineKey,
@@ -80,10 +118,12 @@ pub fn loadFileConfig(allocator: Allocator, pipeline_path: []const u8) !FileConf
     var section: enum { root, pipeline, audio, modulation, pass } = .root;
     var base_value: ?[]u8 = null;
     defer if (base_value) |value| allocator.free(value);
-    var pass_value: ?[]u8 = null;
-    defer if (pass_value) |value| allocator.free(value);
-    var pass_kind: PassKind = .base;
-    var seen_passes: usize = 0;
+
+    var current_pass_kind: PassKind = .base;
+    var current_pass_path: ?[]u8 = null;
+    defer if (current_pass_path) |value| allocator.free(value);
+    var current_pass_effect: ?PostProcessEffect = null;
+    var in_pass = false;
 
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |line_raw| {
@@ -92,7 +132,11 @@ pub fn loadFileConfig(allocator: Allocator, pipeline_path: []const u8) !FileConf
 
         if (line[0] == '[') {
             if (line[line.len - 1] != ']') return error.InvalidPipelineSyntax;
-            if (section == .pass and seen_passes == 1 and pass_value == null) return error.MissingPassPath;
+
+            if (in_pass) {
+                try finalizePass(&result, &base_value, &current_pass_kind, &current_pass_path, &current_pass_effect);
+                in_pass = false;
+            }
 
             const is_array_table = line.len >= 4 and line[1] == '[' and line[line.len - 2] == ']';
             const header = if (is_array_table)
@@ -111,13 +155,13 @@ pub fn loadFileConfig(allocator: Allocator, pipeline_path: []const u8) !FileConf
                 section = .modulation;
             } else if (std.mem.eql(u8, header, "passes")) {
                 if (!is_array_table) return error.InvalidPipelineSyntax;
-                seen_passes += 1;
-                if (seen_passes > 1) return error.TooManyPasses;
                 section = .pass;
-                pass_kind = .base;
-                if (pass_value) |old| {
+                in_pass = true;
+                current_pass_kind = .base;
+                current_pass_effect = null;
+                if (current_pass_path) |old| {
                     allocator.free(old);
-                    pass_value = null;
+                    current_pass_path = null;
                 }
             } else {
                 return error.InvalidPipelineSection;
@@ -175,10 +219,12 @@ pub fn loadFileConfig(allocator: Allocator, pipeline_path: []const u8) !FileConf
             },
             .pass => {
                 if (std.mem.eql(u8, key, "kind")) {
-                    pass_kind = try parsePassKind(value);
+                    current_pass_kind = try parsePassKind(value);
                 } else if (std.mem.eql(u8, key, "path")) {
-                    if (pass_value) |old| allocator.free(old);
-                    pass_value = try parseString(allocator, value);
+                    if (current_pass_path) |old| allocator.free(old);
+                    current_pass_path = try parseString(allocator, value);
+                } else if (std.mem.eql(u8, key, "effect")) {
+                    current_pass_effect = try parsePostProcessEffect(value);
                 } else {
                     return error.InvalidPipelineKey;
                 }
@@ -187,20 +233,40 @@ pub fn loadFileConfig(allocator: Allocator, pipeline_path: []const u8) !FileConf
         }
     }
 
-    if (section == .pass and seen_passes == 1 and pass_value == null) return error.MissingPassPath;
+    if (in_pass) {
+        try finalizePass(&result, &base_value, &current_pass_kind, &current_pass_path, &current_pass_effect);
+        in_pass = false;
+    }
 
-    const base = if (pass_value) |value|
-        blk: {
-            if (pass_kind != .base) return error.InvalidPipelineValue;
-            if (base_value != null) return error.InvalidPipelineSyntax;
-            break :blk value;
-        }
-    else
-        base_value orelse return error.MissingBaseShader;
-
+    const base = base_value orelse return error.MissingBaseShader;
     allocator.free(result.base_path);
     result.base_path = try resolvePipelinePath(allocator, pipeline_path, base);
     return result;
+}
+
+fn finalizePass(
+    result: *FileConfig,
+    base_value: *?[]u8,
+    pass_kind: *PassKind,
+    pass_path: *?[]u8,
+    pass_effect: *?PostProcessEffect,
+) !void {
+    switch (pass_kind.*) {
+        .base => {
+            const path = pass_path.* orelse return error.MissingPassPath;
+            if (pass_effect.* != null or base_value.* != null) return error.InvalidPipelineSyntax;
+            base_value.* = path;
+            pass_path.* = null;
+        },
+        .postprocess => {
+            if (pass_path.* != null) return error.InvalidPipelineSyntax;
+            const effect = pass_effect.* orelse return error.MissingPassEffect;
+            if (result.post_effect != null) return error.InvalidPipelineSyntax;
+            result.post_effect = effect;
+        },
+    }
+
+    pass_effect.* = null;
 }
 
 fn resolvePipelinePath(allocator: Allocator, pipeline_path: []const u8, target: []const u8) ![]u8 {
@@ -248,6 +314,13 @@ fn parseVisualStyle(value: []const u8) !shader.VisualStyle {
 fn parsePassKind(value: []const u8) !PassKind {
     const parsed = try parseUnquotedIdentifier(value);
     if (std.mem.eql(u8, parsed, "base")) return .base;
+    if (std.mem.eql(u8, parsed, "postprocess")) return .postprocess;
+    return error.InvalidPipelineValue;
+}
+
+fn parsePostProcessEffect(value: []const u8) !PostProcessEffect {
+    const parsed = try parseUnquotedIdentifier(value);
+    if (std.mem.eql(u8, parsed, "pulse_zoom")) return .pulse_zoom;
     return error.InvalidPipelineValue;
 }
 
@@ -265,41 +338,256 @@ fn expandEnvironmentReference(allocator: Allocator, value: []const u8) ![]u8 {
     return allocator.dupe(u8, value);
 }
 
-/// Current pipeline runner implementation.
-///
-/// This starts as a thin wrapper around the existing single-shader render path so
-/// the runtime can migrate toward a real multi-pass pipeline without keeping two
-/// rendering architectures alive.
 pub const PipelineRunner = struct {
     base_pass: *shader.Shader,
+    post_pass: ?PostProcessPass = null,
+    offscreen_target: ?RenderTarget = null,
 
     pub fn createLegacy(allocator: Allocator, config: PipelineConfig) !PipelineRunner {
         const base_config = config.passes[0];
-        return .{
+        var self = PipelineRunner{
             .base_pass = try shader.Shader.create(
                 allocator,
-                base_config.source,
+                base_config.source.?,
                 config.resolution,
                 config.frame_rate,
                 base_config.time_modulation,
                 base_config.visual_modulation,
             ),
         };
+        errdefer self.base_pass.destroy(allocator);
+
+        if (config.passes.len > 1) {
+            const post_config = config.passes[1];
+            if (post_config.kind != .postprocess or post_config.effect == null) return error.InvalidPipelineValue;
+
+            self.offscreen_target = try RenderTarget.init(config.resolution);
+            errdefer if (self.offscreen_target) |*target| target.deinit();
+
+            self.post_pass = try PostProcessPass.init(allocator, config.resolution, post_config.effect.?);
+            errdefer if (self.post_pass) |*pass| pass.deinit(allocator);
+        }
+
+        return self;
     }
 
     pub fn destroy(self: *PipelineRunner, allocator: Allocator) void {
+        if (self.post_pass) |*pass| pass.deinit(allocator);
+        if (self.offscreen_target) |*target| target.deinit();
         self.base_pass.destroy(allocator);
     }
 
     pub fn resize(self: *PipelineRunner, resolution: shader.Resolution) void {
         self.base_pass.resolution = resolution;
+        if (self.offscreen_target) |*target| target.resize(resolution) catch unreachable;
+        if (self.post_pass) |*pass| pass.resolution = resolution;
     }
 
     pub fn render(self: *PipelineRunner, snapshot: AudioSnapshot) !void {
-        try self.base_pass.render(snapshot);
+        if (self.offscreen_target) |*target| {
+            target.bind();
+            gl.viewport(0, 0, target.resolution.width, target.resolution.height);
+            gl.clearColor(0, 0, 0, 1);
+            gl.clear(.{ .color = true });
+            try self.base_pass.render(snapshot);
+
+            gl.bindFramebuffer(.invalid, .buffer);
+            gl.viewport(0, 0, target.resolution.width, target.resolution.height);
+            try self.post_pass.?.render(target.texture, snapshot);
+        } else {
+            try self.base_pass.render(snapshot);
+        }
     }
 
     pub fn frame(self: *const PipelineRunner) u32 {
         return self.base_pass.frame;
+    }
+};
+
+const RenderTarget = struct {
+    framebuffer: gl.Framebuffer,
+    texture: gl.Texture,
+    resolution: shader.Resolution,
+
+    pub fn init(resolution: shader.Resolution) !RenderTarget {
+        const texture = gl.Texture.gen();
+        errdefer texture.delete();
+        texture.bind(.@"2d");
+        gl.texStorage2D(.@"2d", 1, .rgba8, resolution.width, resolution.height);
+        texture.parameter(.min_filter, .linear);
+        texture.parameter(.mag_filter, .linear);
+        texture.parameter(.wrap_s, .clamp_to_edge);
+        texture.parameter(.wrap_t, .clamp_to_edge);
+
+        const framebuffer = gl.Framebuffer.gen();
+        errdefer framebuffer.delete();
+        framebuffer.bind(.buffer);
+        framebuffer.texture2D(.buffer, .color0, .@"2d", texture, 0);
+
+        const status = gl.checkFramebufferStatus(.buffer);
+        if (status != @as(@TypeOf(status), .complete)) return error.FramebufferIncomplete;
+
+        gl.bindFramebuffer(.invalid, .buffer);
+
+        return .{
+            .framebuffer = framebuffer,
+            .texture = texture,
+            .resolution = resolution,
+        };
+    }
+
+    pub fn deinit(self: *RenderTarget) void {
+        self.framebuffer.delete();
+        self.texture.delete();
+    }
+
+    pub fn bind(self: *RenderTarget) void {
+        self.framebuffer.bind(.buffer);
+    }
+
+    pub fn resize(self: *RenderTarget, resolution: shader.Resolution) !void {
+        self.deinit();
+        self.* = try init(resolution);
+    }
+};
+
+const POST_PROCESS_VERTEX_SOURCE =
+    \\#version 330 core
+    \\
+    \\layout(location = 0) in vec2 position;
+    \\out vec2 vUv;
+    \\
+    \\void main() {
+    \\    vUv = position * 0.5 + 0.5;
+    \\    gl_Position = vec4(position, 0.0, 1.0);
+    \\}
+;
+
+const POST_PROCESS_FRAGMENT_SOURCE =
+    \\#version 330 core
+    \\
+    \\in vec2 vUv;
+    \\out vec4 fragColor;
+    \\
+    \\uniform sampler2D uInputTexture;
+    \\uniform vec2 uResolution;
+    \\uniform vec4 uAudioBands;
+    \\uniform vec4 uAudioState;
+    \\uniform vec4 uAudioVisualizer;
+    \\uniform float uTime;
+    \\uniform int uEffect;
+    \\
+    \\vec3 applyPulseZoom(vec2 uv) {
+    \\    vec2 centered = uv - 0.5;
+    \\    float impact = uAudioVisualizer.x;
+    \\    float energy = uAudioVisualizer.y;
+    \\    float brightness = uAudioVisualizer.w;
+    \\    float zoom = 1.0 - (impact * 0.07) + (energy * 0.025);
+    \\    vec2 sampleUv = centered * zoom + 0.5;
+    \\    vec2 swirl = vec2(
+    \\        sin(uTime * 1.6 + centered.y * 11.0),
+    \\        cos(uTime * 1.3 + centered.x * 11.0)
+    \\    ) * (impact * 0.01);
+    \\    vec3 color = texture(uInputTexture, clamp(sampleUv + swirl, 0.0, 1.0)).rgb;
+    \\    float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    \\    color = mix(vec3(luma), color, 1.0 + brightness * 0.4);
+    \\    color = ((color - 0.5) * (1.0 + impact * 0.8 + energy * 0.35)) + 0.5;
+    \\    color += vec3(0.12, 0.06, 0.02) * impact;
+    \\    return max(color, vec3(0.0));
+    \\}
+    \\
+    \\void main() {
+    \\    if (uEffect == 0) {
+    \\        fragColor = vec4(applyPulseZoom(vUv), 1.0);
+    \\    } else {
+    \\        fragColor = texture(uInputTexture, vUv);
+    \\    }
+    \\}
+;
+
+const PostProcessPass = struct {
+    program: gl.Program,
+    resolution: shader.Resolution,
+    effect: PostProcessEffect,
+    input_texture_uniform: ?u32,
+    resolution_uniform: ?u32,
+    audio_bands_uniform: ?u32,
+    audio_state_uniform: ?u32,
+    audio_visualizer_uniform: ?u32,
+    time_uniform: ?u32,
+    effect_uniform: ?u32,
+    started: bool = false,
+    first_rendered: std.time.Instant = undefined,
+
+    pub fn init(allocator: Allocator, resolution: shader.Resolution, effect: PostProcessEffect) !PostProcessPass {
+        const vert = gl.Shader.create(.vertex);
+        defer vert.delete();
+        vert.source(1, &.{POST_PROCESS_VERTEX_SOURCE[0..]});
+        vert.compile();
+
+        const frag = gl.Shader.create(.fragment);
+        defer frag.delete();
+        frag.source(1, &.{POST_PROCESS_FRAGMENT_SOURCE[0..]});
+        frag.compile();
+
+        const frag_compiled = frag.get(.compile_status) == gl.binding.TRUE;
+        if (!frag_compiled) {
+            const log = try frag.getCompileLog(allocator);
+            defer allocator.free(log);
+            std.log.err("failed to compile post-process shader:\n{s}", .{log});
+            return error.InvalidPipelineValue;
+        }
+
+        const program = gl.Program.create();
+        errdefer program.delete();
+        program.attach(vert);
+        program.attach(frag);
+        program.link();
+        if (program.get(.link_status) != gl.binding.TRUE) {
+            const log = try program.getCompileLog(allocator);
+            defer allocator.free(log);
+            std.log.err("failed to link post-process shader:\n{s}", .{log});
+            return error.InvalidPipelineValue;
+        }
+
+        return .{
+            .program = program,
+            .resolution = resolution,
+            .effect = effect,
+            .input_texture_uniform = program.uniformLocation("uInputTexture"),
+            .resolution_uniform = program.uniformLocation("uResolution"),
+            .audio_bands_uniform = program.uniformLocation("uAudioBands"),
+            .audio_state_uniform = program.uniformLocation("uAudioState"),
+            .audio_visualizer_uniform = program.uniformLocation("uAudioVisualizer"),
+            .time_uniform = program.uniformLocation("uTime"),
+            .effect_uniform = program.uniformLocation("uEffect"),
+        };
+    }
+
+    pub fn deinit(self: *PostProcessPass, allocator: Allocator) void {
+        _ = allocator;
+        self.program.delete();
+    }
+
+    pub fn render(self: *PostProcessPass, input_texture: gl.Texture, snapshot: AudioSnapshot) !void {
+        if (!self.started) {
+            self.first_rendered = try std.time.Instant.now();
+            self.started = true;
+        }
+        const now = try std.time.Instant.now();
+        const total_time: f32 = @floatFromInt(now.since(self.first_rendered));
+
+        self.program.use();
+        self.program.uniform1i(self.input_texture_uniform, 0);
+        self.program.uniform2f(self.resolution_uniform, @floatFromInt(self.resolution.width), @floatFromInt(self.resolution.height));
+        self.program.uniform4f(self.audio_bands_uniform, snapshot.level, snapshot.bass, snapshot.mid, snapshot.treble);
+        self.program.uniform4f(self.audio_state_uniform, snapshot.beat, snapshot.active, 0, 0);
+        self.program.uniform4f(self.audio_visualizer_uniform, snapshot.impact, snapshot.energy, snapshot.drive, snapshot.brightness);
+        self.program.uniform1f(self.time_uniform, total_time / std.time.ns_per_s);
+        self.program.uniform1i(self.effect_uniform, @intFromEnum(self.effect));
+
+        gl.activeTexture(.texture_0);
+        input_texture.bind(.@"2d");
+        gl.drawElements(.triangles, 6, .unsigned_byte, 0);
     }
 };

@@ -813,8 +813,16 @@ pub fn main() !u8 {
                 std.log.err("pipeline file must define [pipeline] base = \"...\"", .{});
                 return 1;
             },
+            error.MissingPassEffect => {
+                std.log.err("postprocess pass must define an effect", .{});
+                return 1;
+            },
             error.MissingEnvironmentVariable => {
                 std.log.err("pipeline file references an environment variable that is not set", .{});
+                return 1;
+            },
+            error.MissingPassPath => {
+                std.log.err("base pass must define a shader path", .{});
                 return 1;
             },
             error.InvalidPipelineSection, error.InvalidPipelineSyntax, error.InvalidPipelineKey, error.InvalidPipelineValue => {
@@ -909,12 +917,13 @@ pub fn main() !u8 {
     defer global_attributes.deinit();
     global_attributes.bind();
 
-    var pipeline = try PipelineRunner.createLegacy(allocator, PipelineConfig.legacy(
+    var pipeline = try PipelineRunner.createLegacy(allocator, PipelineConfig.unified(
         shader_source,
         .{ .width = surface.width, .height = surface.height },
         target_frame_rate,
         effective_time_modulation,
         effective_visual_modulation,
+        if (pipeline_file_config) |config| config.post_effect else null,
     ));
     defer pipeline.destroy(allocator);
 
