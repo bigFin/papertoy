@@ -909,13 +909,13 @@ pub fn main() !u8 {
     defer global_attributes.deinit();
     global_attributes.bind();
 
-    var pipeline = try PipelineRunner.createLegacy(allocator, PipelineConfig{
-        .source = shader_source,
-        .resolution = .{ .width = surface.width, .height = surface.height },
-        .frame_rate = target_frame_rate,
-        .time_modulation = effective_time_modulation,
-        .visual_modulation = effective_visual_modulation,
-    });
+    var pipeline = try PipelineRunner.createLegacy(allocator, PipelineConfig.legacy(
+        shader_source,
+        .{ .width = surface.width, .height = surface.height },
+        target_frame_rate,
+        effective_time_modulation,
+        effective_visual_modulation,
+    ));
     defer pipeline.destroy(allocator);
 
     var next_frame_time: u64 = 0;

@@ -5,12 +5,42 @@ const audio = @import("audio.zig");
 const AudioSnapshot = @import("audio.zig").Snapshot;
 const shader = @import("shader.zig");
 
-pub const PipelineConfig = struct {
-    resolution: shader.Resolution,
-    frame_rate: u32,
+pub const PassKind = enum {
+    base,
+};
+
+pub const PassConfig = struct {
+    kind: PassKind = .base,
     source: []const u8,
     time_modulation: shader.TimeModulation = .{},
     visual_modulation: shader.VisualModulation = .{},
+};
+
+pub const PipelineConfig = struct {
+    resolution: shader.Resolution,
+    frame_rate: u32,
+    passes: []const PassConfig,
+
+    pub fn legacy(
+        source: []const u8,
+        resolution: shader.Resolution,
+        frame_rate: u32,
+        time_modulation: shader.TimeModulation,
+        visual_modulation: shader.VisualModulation,
+    ) PipelineConfig {
+        return .{
+            .resolution = resolution,
+            .frame_rate = frame_rate,
+            .passes = &.{
+                .{
+                    .kind = .base,
+                    .source = source,
+                    .time_modulation = time_modulation,
+                    .visual_modulation = visual_modulation,
+                },
+            },
+        };
+    }
 };
 
 pub const FileConfig = struct {
@@ -192,14 +222,15 @@ pub const PipelineRunner = struct {
     base_pass: *shader.Shader,
 
     pub fn createLegacy(allocator: Allocator, config: PipelineConfig) !PipelineRunner {
+        const base_config = config.passes[0];
         return .{
             .base_pass = try shader.Shader.create(
                 allocator,
-                config.source,
+                base_config.source,
                 config.resolution,
                 config.frame_rate,
-                config.time_modulation,
-                config.visual_modulation,
+                base_config.time_modulation,
+                base_config.visual_modulation,
             ),
         };
     }
