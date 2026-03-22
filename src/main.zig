@@ -12,11 +12,10 @@ const zig_args = @import("zig-args");
 
 const AudioAnalyzer = @import("audio.zig").AudioAnalyzer;
 const CaptureMode = @import("audio.zig").CaptureMode;
-const Shader = @import("shader.zig").Shader;
 const GlobalAttributes = @import("shader.zig").GlobalAttributes;
-const TimeModulation = @import("shader.zig").TimeModulation;
-const VisualModulation = @import("shader.zig").VisualModulation;
 const VisualStyle = @import("shader.zig").VisualStyle;
+const PipelineConfig = @import("pipeline.zig").PipelineConfig;
+const PipelineRunner = @import("pipeline.zig").PipelineRunner;
 
 const egl = @cImport({
     @cDefine("WL_EGL_PLATFORM", "1");
@@ -835,15 +834,21 @@ pub fn main() !u8 {
     defer global_attributes.deinit();
     global_attributes.bind();
 
-    const shader = try Shader.create(allocator, shader_source, .{ .width = surface.width, .height = surface.height }, target_frame_rate, .{
-        .enabled = options.options.@"audio-time-reactive",
-        .strength = audio_time_strength,
-    }, .{
-        .enabled = options.options.@"audio-visual-reactive",
-        .strength = audio_visual_strength,
-        .style = audio_visual_style,
+    var pipeline = try PipelineRunner.createLegacy(allocator, PipelineConfig{
+        .source = shader_source,
+        .resolution = .{ .width = surface.width, .height = surface.height },
+        .frame_rate = target_frame_rate,
+        .time_modulation = .{
+            .enabled = options.options.@"audio-time-reactive",
+            .strength = audio_time_strength,
+        },
+        .visual_modulation = .{
+            .enabled = options.options.@"audio-visual-reactive",
+            .strength = audio_visual_strength,
+            .style = audio_visual_style,
+        },
     });
-    defer shader.destroy(allocator);
+    defer pipeline.destroy(allocator);
 
     var next_frame_time: u64 = 0;
     var render_frame: bool = false;
@@ -851,7 +856,7 @@ pub fn main() !u8 {
 
     while (true) {
         if (try surface.synchronizeOutputChanges(display)) {
-            shader.resolution = .{ .width = surface.width, .height = surface.height };
+            pipeline.resize(.{ .width = surface.width, .height = surface.height });
             gl.viewport(0, 0, surface.width, surface.height);
         }
 
@@ -859,7 +864,7 @@ pub fn main() !u8 {
         const now_ns = now.since(std.mem.zeroes(std.time.Instant));
 
         // For the first frame, we want to render immediately.
-        if (shader.frame > 0) {
+        if (pipeline.frame() > 0) {
             if (using_custom_frame_rate) {
                 // NOTE: dispatchPending because we don't want to block on a
                 //       non-existent frame event.
@@ -892,7 +897,7 @@ pub fn main() !u8 {
             next_audio_debug_ns = now_ns + std.time.ns_per_s;
         }
 
-        try shader.render(audio_snapshot);
+        try pipeline.render(audio_snapshot);
         try surface.swapBuffers();
     }
 
