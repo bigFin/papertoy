@@ -10,6 +10,7 @@ This first version intentionally models the current "unified" behavior rather
 than the final multi-pass design. A pipeline file currently defines:
 
 - one base shader
+- zero or one built-in post-process pass
 - audio capture settings
 - unified time and visual modulation settings
 
@@ -32,6 +33,10 @@ papertoy --pipeline pipelines/desktop-audio.example.toml
 kind = base
 path = "${PAPERTOY_DEFAULT_SHADER}"
 
+[[passes]]
+kind = postprocess
+effect = pulse_zoom
+
 [audio]
 enabled = true
 capture = sink
@@ -51,7 +56,9 @@ Notes:
 - `capture` is `sink` or `source`.
 - `target = "auto"` means use automatic device selection.
 - `visual_style` is one of `blend`, `pulse`, `drift`, `strobe`, `heat`.
-- this version allows exactly one `[[passes]]` entry and it must have `kind = base`
+- this version requires exactly one `kind = base` pass
+- this version optionally allows one `kind = postprocess` pass
+- the first built-in postprocess effect is `pulse_zoom`
 
 Compatibility:
 
@@ -81,6 +88,7 @@ The remaining top-level runtime controls still come from the CLI:
 ## Examples
 
 - [desktop-audio.example.toml](/storage/code/papertoy/pipelines/desktop-audio.example.toml)
+- [desktop-audio-post.example.toml](/storage/code/papertoy/pipelines/desktop-audio-post.example.toml)
 - [desktop-static.example.toml](/storage/code/papertoy/pipelines/desktop-static.example.toml)
 
 ## Next Step

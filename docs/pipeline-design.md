@@ -89,6 +89,10 @@ TOML is a reasonable fit because:
 [[passes]]
 kind = "base"
 path = "${PAPERTOY_DEFAULT_SHADER}"
+
+[[passes]]
+kind = "postprocess"
+effect = "pulse_zoom"
 ```
 
 ### Audio-Reactive Desktop Preset

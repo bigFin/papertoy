@@ -1,0 +1,21 @@
+# Set PAPERTOY_DEFAULT_SHADER to your preferred shader path before running.
+
+[[passes]]
+kind = base
+path = "${PAPERTOY_DEFAULT_SHADER}"
+
+[[passes]]
+kind = postprocess
+effect = pulse_zoom
+
+[audio]
+enabled = true
+capture = sink
+target = "auto"
+
+[modulation]
+time_reactive = true
+time_strength = 2.0
+visual_reactive = false
+visual_strength = 1.0
+visual_style = blend
