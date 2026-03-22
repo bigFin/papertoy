@@ -17,6 +17,7 @@
     uniform vec4    iAudioState;
     uniform vec4    iAudioVisualizer;
     uniform vec4    iAudioVisualFx;
+    uniform vec4    iAudioVisualStyle;
 };
 
 // Currently unused since we don't have a texture to sample from
