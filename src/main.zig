@@ -13,6 +13,8 @@ const zig_args = @import("zig-args");
 const AudioAnalyzer = @import("audio.zig").AudioAnalyzer;
 const CaptureMode = @import("audio.zig").CaptureMode;
 const GlobalAttributes = @import("shader.zig").GlobalAttributes;
+const TimeModulation = @import("shader.zig").TimeModulation;
+const VisualModulation = @import("shader.zig").VisualModulation;
 const VisualStyle = @import("shader.zig").VisualStyle;
 const PipelineConfig = @import("pipeline.zig").PipelineConfig;
 const PipelineFileConfig = @import("pipeline.zig").FileConfig;
@@ -858,18 +860,18 @@ pub fn main() !u8 {
     else
         .sink;
 
-    const effective_time_modulation = if (pipeline_file_config) |config|
+    const effective_time_modulation: TimeModulation = if (pipeline_file_config) |config|
         config.time_modulation
     else
-        .{
+        TimeModulation{
             .enabled = options.options.@"audio-time-reactive",
             .strength = options.options.@"audio-time-strength" orelse 1.35,
         };
 
-    const effective_visual_modulation = if (pipeline_file_config) |config|
+    const effective_visual_modulation: VisualModulation = if (pipeline_file_config) |config|
         config.visual_modulation
     else
-        .{
+        VisualModulation{
             .enabled = options.options.@"audio-visual-reactive",
             .strength = options.options.@"audio-visual-strength" orelse 1.0,
             .style = if (options.options.@"audio-visual-style") |style|
