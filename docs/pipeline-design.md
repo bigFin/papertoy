@@ -87,7 +87,7 @@ TOML is a reasonable fit because:
 
 ```toml
 [pipeline]
-base = "/storage/SyncBox/shaders/stochastic-asym-quads-everforest-dark-medium.glsl"
+base = "${PAPERTOY_DEFAULT_SHADER}"
 ```
 
 ### Audio-Reactive Desktop Preset

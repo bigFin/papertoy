@@ -1,7 +1,7 @@
-# Copy this file and set [pipeline].base to your shader path.
+# Set PAPERTOY_DEFAULT_SHADER to your preferred shader path before running.
 
 [pipeline]
-base = "/path/to/shader.glsl"
+base = "${PAPERTOY_DEFAULT_SHADER}"
 
 [audio]
 enabled = true
