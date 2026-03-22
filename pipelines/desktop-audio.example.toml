@@ -1,0 +1,16 @@
+# Copy this file and set [pipeline].base to your shader path.
+
+[pipeline]
+base = "/path/to/shader.glsl"
+
+[audio]
+enabled = true
+capture = sink
+target = "auto"
+
+[modulation]
+time_reactive = true
+time_strength = 2.0
+visual_reactive = true
+visual_strength = 1.0
+visual_style = blend
