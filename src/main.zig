@@ -15,7 +15,9 @@ const CaptureMode = @import("audio.zig").CaptureMode;
 const GlobalAttributes = @import("shader.zig").GlobalAttributes;
 const VisualStyle = @import("shader.zig").VisualStyle;
 const PipelineConfig = @import("pipeline.zig").PipelineConfig;
+const PipelineFileConfig = @import("pipeline.zig").FileConfig;
 const PipelineRunner = @import("pipeline.zig").PipelineRunner;
+const loadPipelineFileConfig = @import("pipeline.zig").loadFileConfig;
 
 const egl = @cImport({
     @cDefine("WL_EGL_PLATFORM", "1");
@@ -592,6 +594,7 @@ const Resolution = struct {
 };
 
 const Options = struct {
+    pipeline: ?[]const u8 = null,
     output: ?[]const u8 = null,
     @"frame-rate": ?u32 = null,
     resolution: ?[]const u8 = null,
@@ -614,6 +617,7 @@ pub fn printUsage() !void {
 
     try stderr.writeAll(
         \\Usage: papertoy [options] SHADER_FILE
+        \\   or: papertoy [options] --pipeline PIPELINE_FILE
         \\
         \\Run a Shadertoy-compatible shader in a wlroots layer shell, rendering it as
         \\an animated wallpaper.
@@ -622,6 +626,7 @@ pub fn printUsage() !void {
         \\  SHADER_FILE       The path to the shader file to render. This should be a GLSL
         \\                    fragment shader that is compatible with the Shadertoy API.
         \\Options:
+        \\  --pipeline <file> Use a TOML pipeline file instead of a direct shader path
         \\  --output <name>    Set the output to render the shader on (default: first available output)
         \\  --frame-rate <fps> Set a custom frame rate for the shader (default: vsync)
         \\  --resolution <WxH> Set the resolution of the shader (default: output resolution)
@@ -679,12 +684,33 @@ pub fn main() !u8 {
         return 0;
     }
 
-    if (options.positionals.len != 1) {
-        std.log.err("must have exactly one positional argument (got {})", .{options.positionals.len});
+    const using_pipeline_file = options.options.pipeline != null;
+    if (using_pipeline_file and options.positionals.len != 0) {
+        std.log.err("cannot pass SHADER_FILE when --pipeline is used", .{});
         try printUsage();
         return 1;
     }
-    const shader_path = options.positionals[0];
+    if (!using_pipeline_file and options.positionals.len != 1) {
+        std.log.err("must have exactly one positional argument unless --pipeline is used (got {})", .{options.positionals.len});
+        try printUsage();
+        return 1;
+    }
+    const shader_path = if (!using_pipeline_file) options.positionals[0] else null;
+
+    if (using_pipeline_file) {
+        if (options.options.@"audio-reactive" or
+            options.options.@"audio-target" != null or
+            options.options.@"audio-capture" != null or
+            options.options.@"audio-time-reactive" or
+            options.options.@"audio-time-strength" != null or
+            options.options.@"audio-visual-reactive" or
+            options.options.@"audio-visual-strength" != null or
+            options.options.@"audio-visual-style" != null)
+        {
+            std.log.err("audio and modulation flags cannot be combined with --pipeline in this version", .{});
+            return 1;
+        }
+    }
 
     var custom_resolution: ?Resolution = null;
     if (options.options.resolution) |resolution| {
@@ -772,9 +798,34 @@ pub fn main() !u8 {
 
     try surface.makeCurrent();
 
-    const shader_source = std.fs.cwd().readFileAlloc(allocator, shader_path, std.math.maxInt(usize)) catch |err| switch (err) {
+    var pipeline_file_config: ?PipelineFileConfig = null;
+    defer if (pipeline_file_config) |*config| config.deinit(allocator);
+
+    const effective_shader_path = if (options.options.pipeline) |pipeline_path| blk: {
+        pipeline_file_config = loadPipelineFileConfig(allocator, pipeline_path) catch |err| switch (err) {
+            error.FileNotFound => {
+                std.log.err("pipeline file not found: {s}", .{pipeline_path});
+                return 1;
+            },
+            error.MissingBaseShader => {
+                std.log.err("pipeline file must define [pipeline] base = \"...\"", .{});
+                return 1;
+            },
+            error.InvalidPipelineSection, error.InvalidPipelineSyntax, error.InvalidPipelineKey, error.InvalidPipelineValue => {
+                std.log.err("failed to parse pipeline file {s}: {}", .{ pipeline_path, err });
+                return 1;
+            },
+            else => |e| {
+                std.log.err("failed to load pipeline file {s}: {}", .{ pipeline_path, e });
+                return 1;
+            },
+        };
+        break :blk pipeline_file_config.?.base_path;
+    } else shader_path.?;
+
+    const shader_source = std.fs.cwd().readFileAlloc(allocator, effective_shader_path, std.math.maxInt(usize)) catch |err| switch (err) {
         error.FileNotFound => {
-            std.log.err("shader file not found: {s}", .{shader_path});
+            std.log.err("shader file not found: {s}", .{effective_shader_path});
             return 1;
         },
         else => |e| {
@@ -795,38 +846,56 @@ pub fn main() !u8 {
         target_frame_rate = @intCast(frame_rate);
     }
 
-    var audio_analyzer = AudioAnalyzer.init(allocator, .{
-        .enabled = options.options.@"audio-reactive" or options.options.@"audio-time-reactive" or options.options.@"audio-visual-reactive",
-        .target = options.options.@"audio-target",
-        .capture_mode = if (options.options.@"audio-capture") |mode|
-            parseCaptureMode(mode) catch {
-                std.log.err("audio capture mode must be 'sink' or 'source', got {s}", .{mode});
-                return 1;
-            }
-        else
-            .sink,
-    });
-    defer audio_analyzer.deinit();
-
-    const audio_time_strength = options.options.@"audio-time-strength" orelse 1.35;
-    if (audio_time_strength < 0) {
-        std.log.err("audio time strength must be non-negative, got {d}", .{audio_time_strength});
-        return 1;
-    }
-
-    const audio_visual_strength = options.options.@"audio-visual-strength" orelse 1.0;
-    if (audio_visual_strength < 0) {
-        std.log.err("audio visual strength must be non-negative, got {d}", .{audio_visual_strength});
-        return 1;
-    }
-
-    const audio_visual_style = if (options.options.@"audio-visual-style") |style|
-        parseVisualStyle(style) catch {
-            std.log.err("audio visual style must be one of: blend, pulse, drift, strobe, heat; got {s}", .{style});
+    const cli_capture_mode = if (options.options.@"audio-capture") |mode|
+        parseCaptureMode(mode) catch {
+            std.log.err("audio capture mode must be 'sink' or 'source', got {s}", .{mode});
             return 1;
         }
     else
-        .blend;
+        .sink;
+
+    const effective_time_modulation = if (pipeline_file_config) |config|
+        config.time_modulation
+    else
+        .{
+            .enabled = options.options.@"audio-time-reactive",
+            .strength = options.options.@"audio-time-strength" orelse 1.35,
+        };
+
+    const effective_visual_modulation = if (pipeline_file_config) |config|
+        config.visual_modulation
+    else
+        .{
+            .enabled = options.options.@"audio-visual-reactive",
+            .strength = options.options.@"audio-visual-strength" orelse 1.0,
+            .style = if (options.options.@"audio-visual-style") |style|
+                parseVisualStyle(style) catch {
+                    std.log.err("audio visual style must be one of: blend, pulse, drift, strobe, heat; got {s}", .{style});
+                    return 1;
+                }
+            else
+                .blend,
+        };
+
+    var audio_analyzer = AudioAnalyzer.init(allocator, .{
+        .enabled = if (pipeline_file_config) |config|
+            config.audio_enabled or config.time_modulation.enabled or config.visual_modulation.enabled
+        else
+            options.options.@"audio-reactive" or options.options.@"audio-time-reactive" or options.options.@"audio-visual-reactive",
+        .target = if (pipeline_file_config) |config| config.audio_target else options.options.@"audio-target",
+        .capture_mode = if (pipeline_file_config) |config| config.audio_capture_mode else cli_capture_mode,
+    });
+    defer audio_analyzer.deinit();
+
+    if (effective_time_modulation.strength < 0) {
+        std.log.err("audio time strength must be non-negative, got {d}", .{effective_time_modulation.strength});
+        return 1;
+    }
+
+    if (effective_visual_modulation.strength < 0) {
+        std.log.err("audio visual strength must be non-negative, got {d}", .{effective_visual_modulation.strength});
+        return 1;
+    }
 
     const expected_frame_time_ns = @as(u64, std.time.ns_per_s) / target_frame_rate;
 
@@ -838,15 +907,8 @@ pub fn main() !u8 {
         .source = shader_source,
         .resolution = .{ .width = surface.width, .height = surface.height },
         .frame_rate = target_frame_rate,
-        .time_modulation = .{
-            .enabled = options.options.@"audio-time-reactive",
-            .strength = audio_time_strength,
-        },
-        .visual_modulation = .{
-            .enabled = options.options.@"audio-visual-reactive",
-            .strength = audio_visual_strength,
-            .style = audio_visual_style,
-        },
+        .time_modulation = effective_time_modulation,
+        .visual_modulation = effective_visual_modulation,
     });
     defer pipeline.destroy(allocator);
 
