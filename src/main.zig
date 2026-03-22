@@ -811,6 +811,10 @@ pub fn main() !u8 {
                 std.log.err("pipeline file must define [pipeline] base = \"...\"", .{});
                 return 1;
             },
+            error.MissingEnvironmentVariable => {
+                std.log.err("pipeline file references an environment variable that is not set", .{});
+                return 1;
+            },
             error.InvalidPipelineSection, error.InvalidPipelineSyntax, error.InvalidPipelineKey, error.InvalidPipelineValue => {
                 std.log.err("failed to parse pipeline file {s}: {}", .{ pipeline_path, err });
                 return 1;

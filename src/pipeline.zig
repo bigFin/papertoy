@@ -28,6 +28,7 @@ pub const FileConfig = struct {
 };
 
 pub const ParseError = error{
+    MissingEnvironmentVariable,
     MissingBaseShader,
     InvalidPipelineSyntax,
     InvalidPipelineSection,
@@ -127,9 +128,12 @@ pub fn loadFileConfig(allocator: Allocator, pipeline_path: []const u8) !FileConf
 }
 
 fn resolvePipelinePath(allocator: Allocator, pipeline_path: []const u8, target: []const u8) ![]u8 {
-    if (std.fs.path.isAbsolute(target)) return allocator.dupe(u8, target);
+    const expanded_target = try expandEnvironmentReference(allocator, target);
+    defer if (!std.mem.eql(u8, expanded_target, target)) allocator.free(expanded_target);
+
+    if (std.fs.path.isAbsolute(expanded_target)) return allocator.dupe(u8, expanded_target);
     const base_dir = std.fs.path.dirname(pipeline_path) orelse ".";
-    return std.fs.path.resolve(allocator, &.{ base_dir, target });
+    return std.fs.path.resolve(allocator, &.{ base_dir, expanded_target });
 }
 
 fn parseString(allocator: Allocator, value: []const u8) ![]u8 {
@@ -169,6 +173,14 @@ fn parseUnquotedIdentifier(value: []const u8) ![]const u8 {
     if (value.len == 0) return error.InvalidPipelineValue;
     if (value[0] == '"') return error.InvalidPipelineValue;
     return value;
+}
+
+fn expandEnvironmentReference(allocator: Allocator, value: []const u8) ![]u8 {
+    if (value.len >= 3 and value[0] == '$' and value[1] == '{' and value[value.len - 1] == '}') {
+        const env_name = value[2 .. value.len - 1];
+        return std.process.getEnvVarOwned(allocator, env_name) catch return error.MissingEnvironmentVariable;
+    }
+    return allocator.dupe(u8, value);
 }
 
 /// Current pipeline runner implementation.
