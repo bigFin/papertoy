@@ -60,6 +60,8 @@ pub const FileConfig = struct {
 pub const ParseError = error{
     MissingEnvironmentVariable,
     MissingBaseShader,
+    MissingPassPath,
+    TooManyPasses,
     InvalidPipelineSyntax,
     InvalidPipelineSection,
     InvalidPipelineKey,
@@ -75,9 +77,13 @@ pub fn loadFileConfig(allocator: Allocator, pipeline_path: []const u8) !FileConf
     };
     errdefer result.deinit(allocator);
 
-    var section: enum { root, pipeline, audio, modulation } = .root;
+    var section: enum { root, pipeline, audio, modulation, pass } = .root;
     var base_value: ?[]u8 = null;
     defer if (base_value) |value| allocator.free(value);
+    var pass_value: ?[]u8 = null;
+    defer if (pass_value) |value| allocator.free(value);
+    var pass_kind: PassKind = .base;
+    var seen_passes: usize = 0;
 
     var lines = std.mem.splitScalar(u8, source, '\n');
     while (lines.next()) |line_raw| {
@@ -86,13 +92,33 @@ pub fn loadFileConfig(allocator: Allocator, pipeline_path: []const u8) !FileConf
 
         if (line[0] == '[') {
             if (line[line.len - 1] != ']') return error.InvalidPipelineSyntax;
-            const header = std.mem.trim(u8, line[1 .. line.len - 1], " \t");
+            if (section == .pass and seen_passes == 1 and pass_value == null) return error.MissingPassPath;
+
+            const is_array_table = line.len >= 4 and line[1] == '[' and line[line.len - 2] == ']';
+            const header = if (is_array_table)
+                std.mem.trim(u8, line[2 .. line.len - 2], " \t")
+            else
+                std.mem.trim(u8, line[1 .. line.len - 1], " \t");
+
             if (std.mem.eql(u8, header, "pipeline")) {
+                if (is_array_table) return error.InvalidPipelineSyntax;
                 section = .pipeline;
             } else if (std.mem.eql(u8, header, "audio")) {
+                if (is_array_table) return error.InvalidPipelineSyntax;
                 section = .audio;
             } else if (std.mem.eql(u8, header, "modulation")) {
+                if (is_array_table) return error.InvalidPipelineSyntax;
                 section = .modulation;
+            } else if (std.mem.eql(u8, header, "passes")) {
+                if (!is_array_table) return error.InvalidPipelineSyntax;
+                seen_passes += 1;
+                if (seen_passes > 1) return error.TooManyPasses;
+                section = .pass;
+                pass_kind = .base;
+                if (pass_value) |old| {
+                    allocator.free(old);
+                    pass_value = null;
+                }
             } else {
                 return error.InvalidPipelineSection;
             }
@@ -147,11 +173,31 @@ pub fn loadFileConfig(allocator: Allocator, pipeline_path: []const u8) !FileConf
                     return error.InvalidPipelineKey;
                 }
             },
+            .pass => {
+                if (std.mem.eql(u8, key, "kind")) {
+                    pass_kind = try parsePassKind(value);
+                } else if (std.mem.eql(u8, key, "path")) {
+                    if (pass_value) |old| allocator.free(old);
+                    pass_value = try parseString(allocator, value);
+                } else {
+                    return error.InvalidPipelineKey;
+                }
+            },
             .root => return error.InvalidPipelineSyntax,
         }
     }
 
-    const base = base_value orelse return error.MissingBaseShader;
+    if (section == .pass and seen_passes == 1 and pass_value == null) return error.MissingPassPath;
+
+    const base = if (pass_value) |value|
+        blk: {
+            if (pass_kind != .base) return error.InvalidPipelineValue;
+            if (base_value != null) return error.InvalidPipelineSyntax;
+            break :blk value;
+        }
+    else
+        base_value orelse return error.MissingBaseShader;
+
     allocator.free(result.base_path);
     result.base_path = try resolvePipelinePath(allocator, pipeline_path, base);
     return result;
@@ -196,6 +242,12 @@ fn parseVisualStyle(value: []const u8) !shader.VisualStyle {
     if (std.mem.eql(u8, parsed, "drift")) return .drift;
     if (std.mem.eql(u8, parsed, "strobe")) return .strobe;
     if (std.mem.eql(u8, parsed, "heat")) return .heat;
+    return error.InvalidPipelineValue;
+}
+
+fn parsePassKind(value: []const u8) !PassKind {
+    const parsed = try parseUnquotedIdentifier(value);
+    if (std.mem.eql(u8, parsed, "base")) return .base;
     return error.InvalidPipelineValue;
 }
 
