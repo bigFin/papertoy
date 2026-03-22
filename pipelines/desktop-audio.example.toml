@@ -1,7 +1,8 @@
 # Set PAPERTOY_DEFAULT_SHADER to your preferred shader path before running.
 
-[pipeline]
-base = "${PAPERTOY_DEFAULT_SHADER}"
+[[passes]]
+kind = base
+path = "${PAPERTOY_DEFAULT_SHADER}"
 
 [audio]
 enabled = true

@@ -86,8 +86,9 @@ TOML is a reasonable fit because:
 ### Minimal
 
 ```toml
-[pipeline]
-base = "${PAPERTOY_DEFAULT_SHADER}"
+[[passes]]
+kind = "base"
+path = "${PAPERTOY_DEFAULT_SHADER}"
 ```
 
 ### Audio-Reactive Desktop Preset

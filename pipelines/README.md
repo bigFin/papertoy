@@ -28,8 +28,9 @@ papertoy --pipeline pipelines/desktop-audio.example.toml
 ## Schema
 
 ```toml
-[pipeline]
-base = "${PAPERTOY_DEFAULT_SHADER}"
+[[passes]]
+kind = base
+path = "${PAPERTOY_DEFAULT_SHADER}"
 
 [audio]
 enabled = true
@@ -46,10 +47,15 @@ visual_style = blend
 
 Notes:
 
-- `base` may be absolute, relative to the pipeline file, or `${ENV_VAR}`.
+- `path` may be absolute, relative to the pipeline file, or `${ENV_VAR}`.
 - `capture` is `sink` or `source`.
 - `target = "auto"` means use automatic device selection.
 - `visual_style` is one of `blend`, `pulse`, `drift`, `strobe`, `heat`.
+- this version allows exactly one `[[passes]]` entry and it must have `kind = base`
+
+Compatibility:
+
+- `[pipeline] base = "..."` still works as legacy sugar for a single base pass
 
 ## CLI Interaction
 
