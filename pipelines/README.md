@@ -36,6 +36,7 @@ path = "${PAPERTOY_DEFAULT_SHADER}"
 [[passes]]
 kind = postprocess
 effect = pulse_zoom
+strength = 1.35
 
 [audio]
 enabled = true
@@ -59,6 +60,7 @@ Notes:
 - this version requires exactly one `kind = base` pass
 - this version optionally allows one `kind = postprocess` pass
 - the first built-in postprocess effect is `pulse_zoom`
+- built-in postprocess passes currently support `strength`
 
 Compatibility:
 

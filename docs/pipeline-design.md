@@ -93,6 +93,7 @@ path = "${PAPERTOY_DEFAULT_SHADER}"
 [[passes]]
 kind = "postprocess"
 effect = "pulse_zoom"
+strength = 1.35
 ```
 
 ### Audio-Reactive Desktop Preset
