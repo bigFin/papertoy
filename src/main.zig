@@ -924,6 +924,7 @@ pub fn main() !u8 {
         effective_time_modulation,
         effective_visual_modulation,
         if (pipeline_file_config) |config| config.post_effect else null,
+        if (pipeline_file_config) |config| config.post_strength else 1.0,
     ));
     defer pipeline.destroy(allocator);
 

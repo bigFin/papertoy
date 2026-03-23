@@ -19,6 +19,7 @@ pub const PassConfig = struct {
     kind: PassKind = .base,
     source: ?[]const u8 = null,
     effect: ?PostProcessEffect = null,
+    strength: f32 = 1.0,
     time_modulation: shader.TimeModulation = .{},
     visual_modulation: shader.VisualModulation = .{},
 };
@@ -56,6 +57,7 @@ pub const PipelineConfig = struct {
         time_modulation: shader.TimeModulation,
         visual_modulation: shader.VisualModulation,
         post_effect: ?PostProcessEffect,
+        post_strength: f32,
     ) PipelineConfig {
         if (post_effect) |effect| {
             return .{
@@ -71,6 +73,7 @@ pub const PipelineConfig = struct {
                     .{
                         .kind = .postprocess,
                         .effect = effect,
+                        .strength = post_strength,
                     },
                 },
             };
@@ -83,6 +86,7 @@ pub const PipelineConfig = struct {
 pub const FileConfig = struct {
     base_path: []u8,
     post_effect: ?PostProcessEffect = null,
+    post_strength: f32 = 1.0,
     audio_enabled: bool = false,
     audio_target: ?[]u8 = null,
     audio_capture_mode: audio.CaptureMode = .sink,
@@ -123,6 +127,7 @@ pub fn loadFileConfig(allocator: Allocator, pipeline_path: []const u8) !FileConf
     var current_pass_path: ?[]u8 = null;
     defer if (current_pass_path) |value| allocator.free(value);
     var current_pass_effect: ?PostProcessEffect = null;
+    var current_pass_strength: f32 = 1.0;
     var in_pass = false;
 
     var lines = std.mem.splitScalar(u8, source, '\n');
@@ -134,7 +139,7 @@ pub fn loadFileConfig(allocator: Allocator, pipeline_path: []const u8) !FileConf
             if (line[line.len - 1] != ']') return error.InvalidPipelineSyntax;
 
             if (in_pass) {
-                try finalizePass(&result, &base_value, &current_pass_kind, &current_pass_path, &current_pass_effect);
+                try finalizePass(&result, &base_value, &current_pass_kind, &current_pass_path, &current_pass_effect, &current_pass_strength);
                 in_pass = false;
             }
 
@@ -159,6 +164,7 @@ pub fn loadFileConfig(allocator: Allocator, pipeline_path: []const u8) !FileConf
                 in_pass = true;
                 current_pass_kind = .base;
                 current_pass_effect = null;
+                current_pass_strength = 1.0;
                 if (current_pass_path) |old| {
                     allocator.free(old);
                     current_pass_path = null;
@@ -225,6 +231,8 @@ pub fn loadFileConfig(allocator: Allocator, pipeline_path: []const u8) !FileConf
                     current_pass_path = try parseString(allocator, value);
                 } else if (std.mem.eql(u8, key, "effect")) {
                     current_pass_effect = try parsePostProcessEffect(value);
+                } else if (std.mem.eql(u8, key, "strength")) {
+                    current_pass_strength = try parseFloat(value);
                 } else {
                     return error.InvalidPipelineKey;
                 }
@@ -234,7 +242,7 @@ pub fn loadFileConfig(allocator: Allocator, pipeline_path: []const u8) !FileConf
     }
 
     if (in_pass) {
-        try finalizePass(&result, &base_value, &current_pass_kind, &current_pass_path, &current_pass_effect);
+        try finalizePass(&result, &base_value, &current_pass_kind, &current_pass_path, &current_pass_effect, &current_pass_strength);
         in_pass = false;
     }
 
@@ -250,11 +258,12 @@ fn finalizePass(
     pass_kind: *PassKind,
     pass_path: *?[]u8,
     pass_effect: *?PostProcessEffect,
+    pass_strength: *f32,
 ) !void {
     switch (pass_kind.*) {
         .base => {
             const path = pass_path.* orelse return error.MissingPassPath;
-            if (pass_effect.* != null or base_value.* != null) return error.InvalidPipelineSyntax;
+            if (pass_effect.* != null or base_value.* != null or pass_strength.* != 1.0) return error.InvalidPipelineSyntax;
             base_value.* = path;
             pass_path.* = null;
         },
@@ -263,10 +272,12 @@ fn finalizePass(
             const effect = pass_effect.* orelse return error.MissingPassEffect;
             if (result.post_effect != null) return error.InvalidPipelineSyntax;
             result.post_effect = effect;
+            result.post_strength = pass_strength.*;
         },
     }
 
     pass_effect.* = null;
+    pass_strength.* = 1.0;
 }
 
 fn resolvePipelinePath(allocator: Allocator, pipeline_path: []const u8, target: []const u8) ![]u8 {
@@ -366,6 +377,7 @@ pub const PipelineRunner = struct {
 
             self.post_pass = try PostProcessPass.init(allocator, config.resolution, post_config.effect.?);
             errdefer if (self.post_pass) |*pass| pass.deinit(allocator);
+            self.post_pass.?.strength = post_config.strength;
         }
 
         return self;
@@ -509,6 +521,7 @@ const PostProcessPass = struct {
     program: gl.Program,
     resolution: shader.Resolution,
     effect: PostProcessEffect,
+    strength: f32 = 1.0,
     input_texture_uniform: ?u32,
     resolution_uniform: ?u32,
     audio_bands_uniform: ?u32,
@@ -582,7 +595,13 @@ const PostProcessPass = struct {
         self.program.uniform2f(self.resolution_uniform, @floatFromInt(self.resolution.width), @floatFromInt(self.resolution.height));
         self.program.uniform4f(self.audio_bands_uniform, snapshot.level, snapshot.bass, snapshot.mid, snapshot.treble);
         self.program.uniform4f(self.audio_state_uniform, snapshot.beat, snapshot.active, 0, 0);
-        self.program.uniform4f(self.audio_visualizer_uniform, snapshot.impact, snapshot.energy, snapshot.drive, snapshot.brightness);
+        self.program.uniform4f(
+            self.audio_visualizer_uniform,
+            snapshot.impact * self.strength,
+            snapshot.energy * self.strength,
+            snapshot.drive,
+            snapshot.brightness * self.strength,
+        );
         self.program.uniform1f(self.time_uniform, total_time / std.time.ns_per_s);
         self.program.uniform1i(self.effect_uniform, @intFromEnum(self.effect));
 
