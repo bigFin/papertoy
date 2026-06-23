@@ -29,7 +29,8 @@ pub const PassConfig = struct {
 pub const PipelineConfig = struct {
     resolution: shader.Resolution,
     frame_rate: u32,
-    passes: []const PassConfig,
+    pass_count: usize,
+    passes: [2]PassConfig,
 
     pub fn legacy(
         source: []const u8,
@@ -41,13 +42,15 @@ pub const PipelineConfig = struct {
         return .{
             .resolution = resolution,
             .frame_rate = frame_rate,
-            .passes = &.{
+            .pass_count = 1,
+            .passes = .{
                 .{
                     .kind = .base,
                     .source = source,
                     .time_modulation = time_modulation,
                     .visual_modulation = visual_modulation,
                 },
+                .{},
             },
         };
     }
@@ -65,7 +68,8 @@ pub const PipelineConfig = struct {
             return .{
                 .resolution = resolution,
                 .frame_rate = frame_rate,
-                .passes = &.{
+                .pass_count = 2,
+                .passes = .{
                     .{
                         .kind = .base,
                         .source = source,
@@ -84,6 +88,24 @@ pub const PipelineConfig = struct {
         return legacy(source, resolution, frame_rate, time_modulation, visual_modulation);
     }
 };
+
+test "PipelineConfig stores generated passes inline" {
+    const source = "void mainImage(out vec4 fragColor, in vec2 fragCoord) { fragColor = vec4(fragCoord, 0.0, 1.0); }";
+    const resolution: shader.Resolution = .{ .width = 64, .height = 32 };
+
+    const legacy_config = PipelineConfig.legacy(source, resolution, 60, .{}, .{});
+    try std.testing.expectEqual(@as(usize, 1), legacy_config.pass_count);
+    try std.testing.expectEqual(.base, legacy_config.passes[0].kind);
+    try std.testing.expectEqualStrings(source, legacy_config.passes[0].source.?);
+
+    const post_config = PipelineConfig.unified(source, resolution, 60, .{}, .{}, .pulse_zoom, 0.75);
+    try std.testing.expectEqual(@as(usize, 2), post_config.pass_count);
+    try std.testing.expectEqual(.base, post_config.passes[0].kind);
+    try std.testing.expectEqualStrings(source, post_config.passes[0].source.?);
+    try std.testing.expectEqual(.postprocess, post_config.passes[1].kind);
+    try std.testing.expectEqual(PostProcessEffect.pulse_zoom, post_config.passes[1].effect.?);
+    try std.testing.expectEqual(@as(f32, 0.75), post_config.passes[1].strength);
+}
 
 pub const FileConfig = struct {
     base_path: []u8,
@@ -357,11 +379,14 @@ pub const PipelineRunner = struct {
     offscreen_target: ?RenderTarget = null,
 
     pub fn createLegacy(allocator: Allocator, config: PipelineConfig) !PipelineRunner {
-        const base_config = config.passes[0];
+        const passes = config.passes[0..config.pass_count];
+        if (passes.len == 0) return error.InvalidPipelineValue;
+
+        const base_config = passes[0];
         var self = PipelineRunner{
             .base_pass = try shader.Shader.create(
                 allocator,
-                base_config.source.?,
+                base_config.source orelse return error.InvalidPipelineValue,
                 config.resolution,
                 config.frame_rate,
                 base_config.time_modulation,
@@ -370,8 +395,8 @@ pub const PipelineRunner = struct {
         };
         errdefer self.base_pass.destroy(allocator);
 
-        if (config.passes.len > 1) {
-            const post_config = config.passes[1];
+        if (passes.len > 1) {
+            const post_config = passes[1];
             if (post_config.kind != .postprocess or post_config.effect == null) return error.InvalidPipelineValue;
 
             self.offscreen_target = try RenderTarget.init(config.resolution);
