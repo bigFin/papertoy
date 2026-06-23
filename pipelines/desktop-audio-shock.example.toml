@@ -1,0 +1,40 @@
+# Set PAPERTOY_DEFAULT_SHADER to your preferred shader path before running.
+#
+# A deliberately intense preset that showcases the shock_ring postprocess. Use
+# this when the music should visibly distort the wallpaper.
+
+[[passes]]
+kind = base
+path = "${PAPERTOY_DEFAULT_SHADER}"
+
+[[passes]]
+kind = postprocess
+effect = pulse_zoom
+strength = 0.75
+
+[[passes]]
+kind = postprocess
+effect = heat_shift
+strength = 0.60
+
+[[passes]]
+kind = postprocess
+effect = shock_ring
+strength = 0.85
+
+[[passes]]
+kind = postprocess
+effect = impact_flash
+strength = 0.45
+
+[audio]
+enabled = true
+capture = sink
+target = "auto"
+
+[modulation]
+time_reactive = true
+time_strength = 2.2
+visual_reactive = false
+visual_strength = 1.0
+visual_style = blend

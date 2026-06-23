@@ -153,7 +153,6 @@ raw audio band values.
 
 - Add an overlay mode for live values such as target, impact, beat, drive, and
   brightness. Terminal debug output already exists through `--audio-debug`.
-- Add discoverability for built-in postprocess effects.
 - Tune smoothing, decay, and weighting for the derived visualizer signals.
 
 ### Likely Direction

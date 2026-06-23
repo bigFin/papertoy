@@ -122,6 +122,10 @@ The remaining top-level runtime controls still come from the CLI:
 - [desktop-audio.example.toml](desktop-audio.example.toml)
 - [desktop-audio-post.example.toml](desktop-audio-post.example.toml) uses a
   four-pass built-in effect chain
+- [desktop-audio-soft.example.toml](desktop-audio-soft.example.toml) uses a
+  gentler three-pass chain for daily desktop use
+- [desktop-audio-shock.example.toml](desktop-audio-shock.example.toml)
+  showcases the more intense `shock_ring` effect
 - [desktop-static.example.toml](desktop-static.example.toml)
 
 ## Current Limits

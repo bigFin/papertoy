@@ -75,6 +75,7 @@ pub fn build(b: *std.Build) void {
     exe_unit_tests.linkSystemLibrary("wayland-egl");
     exe_unit_tests.linkSystemLibrary("EGL");
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
+    run_exe_unit_tests.setEnvironmentVariable("PAPERTOY_DEFAULT_SHADER", "test-shader.glsl");
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_exe_unit_tests.step);

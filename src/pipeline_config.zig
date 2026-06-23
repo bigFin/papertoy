@@ -289,6 +289,26 @@ test "loadFileConfig treats auto audio target as default target" {
     try std.testing.expectEqual(@as(?[]u8, null), config.audio_target);
 }
 
+test "tracked example pipeline files parse" {
+    const allocator = std.testing.allocator;
+
+    const example_paths = [_][]const u8{
+        "pipelines/desktop-static.example.toml",
+        "pipelines/desktop-audio.example.toml",
+        "pipelines/desktop-audio-post.example.toml",
+        "pipelines/desktop-audio-soft.example.toml",
+        "pipelines/desktop-audio-shock.example.toml",
+    };
+
+    for (example_paths) |pipeline_path| {
+        var config = try loadFileConfig(allocator, pipeline_path);
+        defer config.deinit(allocator);
+
+        try std.testing.expect(config.base_path.len > 0);
+        try std.testing.expect(config.post_count <= max_postprocess_passes);
+    }
+}
+
 test "loadFileConfig rejects invalid pass combinations" {
     const allocator = std.testing.allocator;
 

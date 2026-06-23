@@ -345,16 +345,16 @@ Deliverables:
 
 Add built-in effect library and presets.
 
-Status: implemented for the first built-in set and a desktop example preset.
+Status: implemented for the first built-in set and desktop example presets.
 
 Deliverables:
 
 - built-in post-process effects
-- desktop-friendly preset(s)
+- desktop-friendly presets
 - branch-local experimentation becomes reproducible config
 
-The current branch implements the first bounded built-in set, a sample desktop
-pipeline, and a shared postprocess shader program. Later work can add more
+The current branch implements the first bounded built-in set, sample desktop
+pipelines, and a shared postprocess shader program. Later work can add more
 effects without changing the linear pipeline contract.
 
 ## Open Design Questions
@@ -399,12 +399,11 @@ Implemented in this branch:
 - shared compiled postprocess shader program per output pipeline
 - built-in effects: `pulse_zoom`, `glow_grade`, `heat_shift`,
   `impact_flash`, and `shock_ring`
-- example pipelines under `pipelines/`
+- example pipelines under `pipelines/`, including calmer and more intense
+  audio-reactive presets
 
 Recommended next work:
 
-- add one or two named preset files for different moods, including an explicit
-  `shock_ring` preset
 - consider simple per-effect parameter metadata before adding many more effects
 - decide whether file-based postprocess shaders belong in this branch or a
   later branch

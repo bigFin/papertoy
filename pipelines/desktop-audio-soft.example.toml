@@ -1,0 +1,35 @@
+# Set PAPERTOY_DEFAULT_SHADER to your preferred shader path before running.
+#
+# A calmer audio-reactive stack for desktop use. This keeps the shader's own
+# motion visible and adds gentle audio-driven polish after the base pass.
+
+[[passes]]
+kind = base
+path = "${PAPERTOY_DEFAULT_SHADER}"
+
+[[passes]]
+kind = postprocess
+effect = pulse_zoom
+strength = 0.45
+
+[[passes]]
+kind = postprocess
+effect = glow_grade
+strength = 0.65
+
+[[passes]]
+kind = postprocess
+effect = heat_shift
+strength = 0.25
+
+[audio]
+enabled = true
+capture = sink
+target = "auto"
+
+[modulation]
+time_reactive = true
+time_strength = 1.4
+visual_reactive = false
+visual_strength = 1.0
+visual_style = blend

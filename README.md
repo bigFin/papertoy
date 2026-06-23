@@ -79,6 +79,9 @@ $ PAPERTOY_DEFAULT_SHADER=/path/to/shader.glsl \
     papertoy --pipeline pipelines/desktop-audio-post.example.toml
 ```
 
+Additional pipeline examples include calmer and more intense audio-reactive
+presets under [pipelines](pipelines/).
+
 ### Configuration Examples
 
 **1. Performance Mode (Recommended for 4K)**
