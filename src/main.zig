@@ -25,6 +25,8 @@ const PipelineParseDiagnostic = pipeline_config.ParseDiagnostic;
 const PostProcessConfig = pipeline_config.PostProcessConfig;
 const loadPipelineFileConfigWithDiagnostic = pipeline_config.loadFileConfigWithDiagnostic;
 
+const max_shader_file_size = 16 * 1024 * 1024;
+
 const egl = @cImport({
     @cDefine("WL_EGL_PLATFORM", "1");
     @cInclude("EGL/egl.h");
@@ -1435,6 +1437,10 @@ pub fn main() !u8 {
                 std.log.err("pipeline file not found: {s}", .{pipeline_path});
                 return 1;
             },
+            error.FileTooBig => {
+                std.log.err("pipeline file is too large: {s}", .{pipeline_path});
+                return 1;
+            },
             error.MissingBaseShader, error.MissingPassEffect, error.MissingEnvironmentVariable, error.MissingPassPath, error.InvalidPipelineSection, error.InvalidPipelineSyntax, error.InvalidPipelineKey, error.InvalidPipelineValue => {
                 logPipelineParseError(pipeline_path, &pipeline_parse_diagnostic, err);
                 return 1;
@@ -1447,9 +1453,13 @@ pub fn main() !u8 {
         break :blk pipeline_file_config.?.base_path;
     } else shader_path.?;
 
-    const shader_source = std.fs.cwd().readFileAlloc(allocator, effective_shader_path, std.math.maxInt(usize)) catch |err| switch (err) {
+    const shader_source = std.fs.cwd().readFileAlloc(allocator, effective_shader_path, max_shader_file_size) catch |err| switch (err) {
         error.FileNotFound => {
             std.log.err("shader file not found: {s}", .{effective_shader_path});
+            return 1;
+        },
+        error.FileTooBig => {
+            std.log.err("shader file is too large: {s}", .{effective_shader_path});
             return 1;
         },
         else => |e| {

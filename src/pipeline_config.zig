@@ -14,6 +14,7 @@ pub const PostProcessEffect = effects.PostProcessEffect;
 
 pub const max_postprocess_passes = 4;
 pub const max_passes = max_postprocess_passes + 1;
+const max_pipeline_file_size = 1024 * 1024;
 
 pub const PostProcessConfig = struct {
     effect: PostProcessEffect = .pulse_zoom,
@@ -307,6 +308,27 @@ test "tracked example pipeline files parse" {
         try std.testing.expect(config.base_path.len > 0);
         try std.testing.expect(config.post_count <= max_postprocess_passes);
     }
+}
+
+test "loadFileConfig rejects oversized pipeline files" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const oversized = try allocator.alloc(u8, max_pipeline_file_size + 1);
+    defer allocator.free(oversized);
+    @memset(oversized, '#');
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "oversized.toml",
+        .data = oversized,
+    });
+
+    const pipeline_path = try testingTmpPath(allocator, &tmp, "oversized.toml");
+    defer allocator.free(pipeline_path);
+
+    try std.testing.expectError(error.FileTooBig, loadFileConfig(allocator, pipeline_path));
 }
 
 test "loadFileConfig rejects invalid pass combinations" {
@@ -613,7 +635,7 @@ pub fn loadFileConfigWithDiagnostic(
 ) !FileConfig {
     if (diagnostic) |target| target.deinit(allocator);
 
-    const source = try std.fs.cwd().readFileAlloc(allocator, pipeline_path, std.math.maxInt(usize));
+    const source = try std.fs.cwd().readFileAlloc(allocator, pipeline_path, max_pipeline_file_size);
     defer allocator.free(source);
 
     var parser = try PipelineFileParser.init(allocator, pipeline_path, diagnostic);
