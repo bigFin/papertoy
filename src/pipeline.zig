@@ -6,6 +6,8 @@ const AudioSnapshot = @import("audio.zig").Snapshot;
 const gl = @import("zgl");
 const shader = @import("shader.zig");
 
+const glb = gl.binding;
+
 pub const PassKind = enum {
     base,
     postprocess,
@@ -424,12 +426,7 @@ const RenderTarget = struct {
     pub fn init(resolution: shader.Resolution) !RenderTarget {
         const texture = gl.Texture.gen();
         errdefer texture.delete();
-        texture.bind(.@"2d");
-        gl.texStorage2D(.@"2d", 1, .rgba8, resolution.width, resolution.height);
-        texture.parameter(.min_filter, .linear);
-        texture.parameter(.mag_filter, .linear);
-        texture.parameter(.wrap_s, .clamp_to_edge);
-        texture.parameter(.wrap_t, .clamp_to_edge);
+        configureTexture2D(texture, resolution);
 
         const framebuffer = gl.Framebuffer.gen();
         errdefer framebuffer.delete();
@@ -462,6 +459,29 @@ const RenderTarget = struct {
         self.* = try init(resolution);
     }
 };
+
+fn configureTexture2D(texture: gl.Texture, resolution: shader.Resolution) void {
+    bindTexture2D(texture);
+    glb.texImage2D(
+        glb.TEXTURE_2D,
+        0,
+        glb.RGBA8,
+        @intCast(resolution.width),
+        @intCast(resolution.height),
+        0,
+        glb.RGBA,
+        glb.UNSIGNED_BYTE,
+        null,
+    );
+    glb.texParameteri(glb.TEXTURE_2D, glb.TEXTURE_MIN_FILTER, glb.LINEAR);
+    glb.texParameteri(glb.TEXTURE_2D, glb.TEXTURE_MAG_FILTER, glb.LINEAR);
+    glb.texParameteri(glb.TEXTURE_2D, glb.TEXTURE_WRAP_S, glb.CLAMP_TO_EDGE);
+    glb.texParameteri(glb.TEXTURE_2D, glb.TEXTURE_WRAP_T, glb.CLAMP_TO_EDGE);
+}
+
+fn bindTexture2D(texture: gl.Texture) void {
+    glb.bindTexture(glb.TEXTURE_2D, @intFromEnum(texture));
+}
 
 const POST_PROCESS_VERTEX_SOURCE =
     \\#version 330 core
@@ -591,22 +611,22 @@ const PostProcessPass = struct {
         const total_time: f32 = @floatFromInt(now.since(self.first_rendered));
 
         self.program.use();
-        self.program.uniform1i(self.input_texture_uniform, 0);
-        self.program.uniform2f(self.resolution_uniform, @floatFromInt(self.resolution.width), @floatFromInt(self.resolution.height));
-        self.program.uniform4f(self.audio_bands_uniform, snapshot.level, snapshot.bass, snapshot.mid, snapshot.treble);
-        self.program.uniform4f(self.audio_state_uniform, snapshot.beat, snapshot.active, 0, 0);
-        self.program.uniform4f(
+        gl.uniform1i(self.input_texture_uniform, 0);
+        gl.uniform2f(self.resolution_uniform, @floatFromInt(self.resolution.width), @floatFromInt(self.resolution.height));
+        gl.uniform4f(self.audio_bands_uniform, snapshot.level, snapshot.bass, snapshot.mid, snapshot.treble);
+        gl.uniform4f(self.audio_state_uniform, snapshot.beat, snapshot.active, 0, 0);
+        gl.uniform4f(
             self.audio_visualizer_uniform,
             snapshot.impact * self.strength,
             snapshot.energy * self.strength,
             snapshot.drive,
             snapshot.brightness * self.strength,
         );
-        self.program.uniform1f(self.time_uniform, total_time / std.time.ns_per_s);
-        self.program.uniform1i(self.effect_uniform, @intFromEnum(self.effect));
+        gl.uniform1f(self.time_uniform, total_time / std.time.ns_per_s);
+        gl.uniform1i(self.effect_uniform, @intFromEnum(self.effect));
 
         gl.activeTexture(.texture_0);
-        input_texture.bind(.@"2d");
+        bindTexture2D(input_texture);
         gl.drawElements(.triangles, 6, .unsigned_byte, 0);
     }
 };
