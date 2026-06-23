@@ -201,7 +201,10 @@ test "AnalyzerState reports active energy for loud samples" {
         writeStereoSample(&samples, frame, sample, sample);
     }
 
-    const snapshot = snapshotFromAnalyzer(&analyzer, &samples);
+    var snapshot: Snapshot = .{};
+    for (0..8) |_| {
+        snapshot = snapshotFromAnalyzer(&analyzer, &samples);
+    }
 
     try std.testing.expectEqual(@as(f32, 1), snapshot.active);
     try std.testing.expect(snapshot.level > 0.1);

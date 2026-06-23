@@ -16,11 +16,12 @@ const GlobalAttributes = @import("shader.zig").GlobalAttributes;
 const TimeModulation = @import("shader.zig").TimeModulation;
 const VisualModulation = @import("shader.zig").VisualModulation;
 const VisualStyle = @import("shader.zig").VisualStyle;
-const PipelineConfig = @import("pipeline.zig").PipelineConfig;
-const PipelineFileConfig = @import("pipeline.zig").FileConfig;
 const PipelineRunner = @import("pipeline.zig").PipelineRunner;
-const PostProcessEffect = @import("pipeline.zig").PostProcessEffect;
-const loadPipelineFileConfig = @import("pipeline.zig").loadFileConfig;
+const pipeline_config = @import("pipeline_config.zig");
+const PipelineConfig = pipeline_config.PipelineConfig;
+const PipelineFileConfig = pipeline_config.FileConfig;
+const PostProcessEffect = pipeline_config.PostProcessEffect;
+const loadPipelineFileConfig = pipeline_config.loadFileConfig;
 
 const egl = @cImport({
     @cDefine("WL_EGL_PLATFORM", "1");
@@ -37,6 +38,11 @@ pub const opengl_error_handling = .assert;
 pub const std_options: std.Options = .{
     .log_level = if (builtin.mode == .Debug) .debug else .info,
 };
+
+test {
+    _ = @import("audio.zig");
+    _ = @import("pipeline_config.zig");
+}
 
 /// An output that represents a physical display.
 const Output = struct {
