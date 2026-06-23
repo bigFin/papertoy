@@ -153,6 +153,75 @@ const AnalyzerState = struct {
     }
 };
 
+fn snapshotFromAnalyzer(analyzer: *AnalyzerState, bytes: []const u8) Snapshot {
+    var shared: SharedState = .{};
+    analyzer.update(&shared, bytes);
+    shared.mutex.lock();
+    defer shared.mutex.unlock();
+    return shared.snapshot;
+}
+
+fn writeStereoSample(bytes: []u8, frame_index: usize, left: i16, right: i16) void {
+    const offset = frame_index * 4;
+    writeSample(bytes[offset..][0..2], left);
+    writeSample(bytes[offset + 2 ..][0..2], right);
+}
+
+fn writeSample(bytes: []u8, sample: i16) void {
+    const value: u16 = @bitCast(sample);
+    bytes[0] = @truncate(value);
+    bytes[1] = @truncate(value >> 8);
+}
+
+test "AnalyzerState keeps silence inactive" {
+    var analyzer: AnalyzerState = .{};
+    var silence = [_]u8{0} ** 4096;
+
+    var snapshot: Snapshot = .{};
+    for (0..8) |_| {
+        snapshot = snapshotFromAnalyzer(&analyzer, &silence);
+    }
+
+    try std.testing.expectEqual(@as(f32, 0), snapshot.active);
+    try std.testing.expectEqual(@as(f32, 0), snapshot.level);
+    try std.testing.expectEqual(@as(f32, 0), snapshot.bass);
+    try std.testing.expectEqual(@as(f32, 0), snapshot.mid);
+    try std.testing.expectEqual(@as(f32, 0), snapshot.treble);
+    try std.testing.expectEqual(@as(f32, 0), snapshot.impact);
+}
+
+test "AnalyzerState reports active energy for loud samples" {
+    var analyzer: AnalyzerState = .{};
+    var samples: [4096]u8 = undefined;
+    for (0..(samples.len / 4)) |frame| {
+        const sample: i16 = if (frame % 2 == 0) 18000 else -18000;
+        writeStereoSample(&samples, frame, sample, sample);
+    }
+
+    const snapshot = snapshotFromAnalyzer(&analyzer, &samples);
+
+    try std.testing.expectEqual(@as(f32, 1), snapshot.active);
+    try std.testing.expect(snapshot.level > 0.1);
+    try std.testing.expect(snapshot.mid > 0.1 or snapshot.treble > 0.1);
+    try std.testing.expect(snapshot.impact > 0.1);
+    try std.testing.expect(snapshot.energy > 0.1);
+}
+
+test "AnalyzerState ignores incomplete trailing frames" {
+    var analyzer: AnalyzerState = .{};
+    var samples: [4101]u8 = undefined;
+    @memset(&samples, 0);
+    for (0..((samples.len - 1) / 4)) |frame| {
+        writeStereoSample(&samples, frame, 12000, 12000);
+    }
+    samples[samples.len - 1] = 0xff;
+
+    const snapshot = snapshotFromAnalyzer(&analyzer, &samples);
+
+    try std.testing.expectEqual(@as(f32, 1), snapshot.active);
+    try std.testing.expect(snapshot.level > 0.1);
+}
+
 /// Render-facing API for audio-reactive state.
 ///
 /// The current implementation reads raw PCM from `pw-record` in a background
@@ -293,6 +362,7 @@ pub const AudioAnalyzer = struct {
 
         const stdout = child.stdout orelse return error.MissingChildStdout;
         child.stdout = null;
+        errdefer stdout.close();
 
         const thread = try std.Thread.spawn(.{}, captureMain, .{ shared, stdout });
 
