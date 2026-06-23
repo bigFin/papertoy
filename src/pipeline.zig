@@ -1,7 +1,9 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const AudioSnapshot = @import("audio.zig").Snapshot;
+const audio = @import("audio.zig");
+const AudioSnapshot = audio.Snapshot;
+const AudioUniformPayload = audio.UniformPayload;
 const gl = @import("zgl");
 const pipeline_config = @import("pipeline_config.zig");
 const shader = @import("shader.zig");
@@ -147,6 +149,10 @@ fn bindTexture2D(texture: gl.Texture) void {
     glb.bindTexture(glb.TEXTURE_2D, @intFromEnum(texture));
 }
 
+fn setUniform4f(location: ?u32, values: [4]f32) void {
+    gl.uniform4f(location, values[0], values[1], values[2], values[3]);
+}
+
 const POST_PROCESS_VERTEX_SOURCE =
     \\#version 330 core
     \\
@@ -274,18 +280,14 @@ const PostProcessPass = struct {
         const now = try std.time.Instant.now();
         const total_time: f32 = @floatFromInt(now.since(self.first_rendered));
 
+        const audio_uniforms = AudioUniformPayload.fromSnapshot(snapshot).withEffectStrength(self.strength);
+
         self.program.use();
         gl.uniform1i(self.input_texture_uniform, 0);
         gl.uniform2f(self.resolution_uniform, @floatFromInt(self.resolution.width), @floatFromInt(self.resolution.height));
-        gl.uniform4f(self.audio_bands_uniform, snapshot.level, snapshot.bass, snapshot.mid, snapshot.treble);
-        gl.uniform4f(self.audio_state_uniform, snapshot.beat, snapshot.active, 0, 0);
-        gl.uniform4f(
-            self.audio_visualizer_uniform,
-            snapshot.impact * self.strength,
-            snapshot.energy * self.strength,
-            snapshot.drive,
-            snapshot.brightness * self.strength,
-        );
+        setUniform4f(self.audio_bands_uniform, audio_uniforms.bands);
+        setUniform4f(self.audio_state_uniform, audio_uniforms.state);
+        setUniform4f(self.audio_visualizer_uniform, audio_uniforms.visualizer);
         gl.uniform1f(self.time_uniform, total_time / std.time.ns_per_s);
         gl.uniform1i(self.effect_uniform, @intFromEnum(self.effect));
 

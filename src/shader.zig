@@ -6,7 +6,9 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const gl = @import("zgl");
-const AudioSnapshot = @import("audio.zig").Snapshot;
+const audio = @import("audio.zig");
+const AudioSnapshot = audio.Snapshot;
+const AudioUniformPayload = audio.UniformPayload;
 
 pub const TimeModulation = struct {
     enabled: bool = false,
@@ -177,6 +179,47 @@ const Uniforms = struct {
     }
 };
 
+const AudioVisualUniforms = struct {
+    fx: [4]f32 = .{ 0, 0, 0, 0 },
+    style: [4]f32 = .{ 0, 0, 0, 0 },
+
+    fn fromPayload(payload: AudioUniformPayload, modulation: VisualModulation) AudioVisualUniforms {
+        if (!modulation.enabled) return .{};
+
+        return .{
+            .fx = payload.visualFx(modulation.strength),
+            .style = .{ @floatFromInt(@intFromEnum(modulation.style)), 0, 0, 0 },
+        };
+    }
+};
+
+fn expectVec4Approx(expected: [4]f32, actual: [4]f32) !void {
+    for (expected, actual) |expected_value, actual_value| {
+        try std.testing.expectApproxEqAbs(expected_value, actual_value, 0.0001);
+    }
+}
+
+test "AudioVisualUniforms derives modulation uniforms from audio payload" {
+    const payload = AudioUniformPayload.fromSnapshot(.{
+        .impact = 0.8,
+        .energy = 0.6,
+        .drive = 0.4,
+        .brightness = 0.2,
+    });
+
+    const disabled = AudioVisualUniforms.fromPayload(payload, .{});
+    try std.testing.expectEqual([4]f32{ 0, 0, 0, 0 }, disabled.fx);
+    try std.testing.expectEqual([4]f32{ 0, 0, 0, 0 }, disabled.style);
+
+    const enabled = AudioVisualUniforms.fromPayload(payload, .{
+        .enabled = true,
+        .strength = 2.0,
+        .style = .heat,
+    });
+    try expectVec4Approx(.{ 1.5, 0.68, 0.3, 0.78 }, enabled.fx);
+    try expectVec4Approx(.{ 4, 0, 0, 0 }, enabled.style);
+}
+
 /// A Shadertoy-based shader program that will be rendered to an output.
 pub const Shader = struct {
     /// The actual shader program.
@@ -283,7 +326,7 @@ pub const Shader = struct {
     }
 
     /// Render the shader to the currently bound framebuffer.
-    pub fn render(self: *Shader, audio: AudioSnapshot) !void {
+    pub fn render(self: *Shader, snapshot: AudioSnapshot) !void {
         self.program.use();
 
         if (self.frame == 0) {
@@ -300,8 +343,9 @@ pub const Shader = struct {
         self.uniforms.data.frame = @intCast(self.frame);
         const base_total_time = total_ns / std.time.ns_per_s;
         const base_delta_time = delta_ns / std.time.ns_per_s;
+        const audio_uniforms = AudioUniformPayload.fromSnapshot(snapshot);
         if (self.time_modulation.enabled) {
-            const excitement = (audio.impact * 1.1) + (audio.drive * 0.55) + (audio.energy * 0.25);
+            const excitement = (audio_uniforms.impact() * 1.1) + (audio_uniforms.drive() * 0.55) + (audio_uniforms.energy() * 0.25);
             const multiplier = 1.0 + (std.math.clamp(excitement, 0, 2.5) * self.time_modulation.strength);
             const modulated_delta = base_delta_time * multiplier;
             self.shader_time += modulated_delta;
@@ -312,21 +356,12 @@ pub const Shader = struct {
             self.uniforms.data.time = base_total_time;
             self.uniforms.data.time_delta = base_delta_time;
         }
-        self.uniforms.data.audio_bands = .{ audio.level, audio.bass, audio.mid, audio.treble };
-        self.uniforms.data.audio_state = .{ audio.beat, audio.active, 0, 0 };
-        self.uniforms.data.audio_visualizer = .{ audio.impact, audio.energy, audio.drive, audio.brightness };
-        if (self.visual_modulation.enabled) {
-            self.uniforms.data.audio_visual_fx = .{
-                std.math.clamp(audio.impact * self.visual_modulation.strength, 0, 1.5),
-                std.math.clamp(audio.drive * self.visual_modulation.strength * 0.85, 0, 1.2),
-                std.math.clamp(audio.brightness * self.visual_modulation.strength * 0.75, 0, 1.2),
-                std.math.clamp(audio.energy * self.visual_modulation.strength * 0.65, 0, 1.0),
-            };
-            self.uniforms.data.audio_visual_style = .{ @floatFromInt(@intFromEnum(self.visual_modulation.style)), 0, 0, 0 };
-        } else {
-            self.uniforms.data.audio_visual_fx = .{ 0, 0, 0, 0 };
-            self.uniforms.data.audio_visual_style = .{ 0, 0, 0, 0 };
-        }
+        const visual_uniforms = AudioVisualUniforms.fromPayload(audio_uniforms, self.visual_modulation);
+        self.uniforms.data.audio_bands = audio_uniforms.bands;
+        self.uniforms.data.audio_state = audio_uniforms.state;
+        self.uniforms.data.audio_visualizer = audio_uniforms.visualizer;
+        self.uniforms.data.audio_visual_fx = visual_uniforms.fx;
+        self.uniforms.data.audio_visual_style = visual_uniforms.style;
         self.uniforms.bind();
 
         self.last_rendered = now;

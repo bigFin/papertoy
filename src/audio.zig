@@ -15,6 +15,68 @@ pub const Snapshot = struct {
     brightness: f32 = 0,
 };
 
+/// Render-facing vec4 groups derived from an audio snapshot.
+/// Keep this mapping centralized so base shaders and postprocess passes agree.
+pub const UniformPayload = struct {
+    bands: [4]f32,
+    state: [4]f32,
+    visualizer: [4]f32,
+
+    pub fn fromSnapshot(snapshot: Snapshot) UniformPayload {
+        return .{
+            .bands = .{ snapshot.level, snapshot.bass, snapshot.mid, snapshot.treble },
+            .state = .{ snapshot.beat, snapshot.active, 0, 0 },
+            .visualizer = .{ snapshot.impact, snapshot.energy, snapshot.drive, snapshot.brightness },
+        };
+    }
+
+    pub fn visualFx(self: UniformPayload, strength: f32) [4]f32 {
+        return .{
+            clamp01Range(self.impact() * strength, 1.5),
+            clamp01Range(self.drive() * strength * 0.85, 1.2),
+            clamp01Range(self.brightness() * strength * 0.75, 1.2),
+            clamp01Range(self.energy() * strength * 0.65, 1.0),
+        };
+    }
+
+    pub fn withEffectStrength(self: UniformPayload, strength: f32) UniformPayload {
+        var result = self;
+        result.visualizer = .{
+            self.impact() * strength,
+            self.energy() * strength,
+            self.drive(),
+            self.brightness() * strength,
+        };
+        return result;
+    }
+
+    pub fn impact(self: UniformPayload) f32 {
+        return self.visualizer[0];
+    }
+
+    pub fn energy(self: UniformPayload) f32 {
+        return self.visualizer[1];
+    }
+
+    pub fn drive(self: UniformPayload) f32 {
+        return self.visualizer[2];
+    }
+
+    pub fn brightness(self: UniformPayload) f32 {
+        return self.visualizer[3];
+    }
+};
+
+fn clamp01Range(value: f32, max_value: f32) f32 {
+    return std.math.clamp(value, 0, max_value);
+}
+
+fn expectVec4Approx(expected: [4]f32, actual: [4]f32) !void {
+    for (expected, actual) |expected_value, actual_value| {
+        try std.testing.expectApproxEqAbs(expected_value, actual_value, 0.0001);
+    }
+}
+
 pub const Config = struct {
     enabled: bool = false,
     target: ?[]const u8 = null,
@@ -226,6 +288,39 @@ test "AnalyzerState ignores incomplete trailing frames" {
 
     try std.testing.expectEqual(@as(f32, 1), snapshot.active);
     try std.testing.expect(snapshot.level > 0.1);
+}
+
+test "UniformPayload packs snapshot values for render uniforms" {
+    const snapshot: Snapshot = .{
+        .level = 0.1,
+        .bass = 0.2,
+        .mid = 0.3,
+        .treble = 0.4,
+        .beat = 0.5,
+        .active = 1.0,
+        .impact = 0.6,
+        .energy = 0.7,
+        .drive = 0.8,
+        .brightness = 0.9,
+    };
+
+    const payload = UniformPayload.fromSnapshot(snapshot);
+
+    try std.testing.expectEqual([4]f32{ 0.1, 0.2, 0.3, 0.4 }, payload.bands);
+    try std.testing.expectEqual([4]f32{ 0.5, 1.0, 0, 0 }, payload.state);
+    try std.testing.expectEqual([4]f32{ 0.6, 0.7, 0.8, 0.9 }, payload.visualizer);
+}
+
+test "UniformPayload derives visual and postprocess effect channels" {
+    const payload = UniformPayload.fromSnapshot(.{
+        .impact = 1.0,
+        .energy = 0.5,
+        .drive = 0.75,
+        .brightness = 0.25,
+    });
+
+    try expectVec4Approx(.{ 1.5, 1.2, 0.375, 0.65 }, payload.visualFx(2.0));
+    try expectVec4Approx(.{ 1.5, 0.75, 0.75, 0.375 }, payload.withEffectStrength(1.5).visualizer);
 }
 
 /// Render-facing API for audio-reactive state.

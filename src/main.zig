@@ -42,6 +42,7 @@ pub const std_options: std.Options = .{
 test {
     _ = @import("audio.zig");
     _ = @import("pipeline_config.zig");
+    _ = @import("shader.zig");
 }
 
 /// An output that represents a physical display.
