@@ -127,9 +127,92 @@ const POST_PROCESS_FRAGMENT_SOURCE =
     \\    return max(color, vec3(0.0));
     \\}
     \\
+    \\vec3 applyGlowGrade(vec2 uv) {
+    \\    vec2 texel = 1.0 / max(uResolution, vec2(1.0));
+    \\    float energy = uAudioVisualizer.y;
+    \\    float brightness = uAudioVisualizer.w;
+    \\    vec3 color = texture(uInputTexture, uv).rgb;
+    \\    vec3 glow = texture(uInputTexture, clamp(uv + texel * vec2(2.0, 0.0), 0.0, 1.0)).rgb;
+    \\    glow += texture(uInputTexture, clamp(uv + texel * vec2(-2.0, 0.0), 0.0, 1.0)).rgb;
+    \\    glow += texture(uInputTexture, clamp(uv + texel * vec2(0.0, 2.0), 0.0, 1.0)).rgb;
+    \\    glow += texture(uInputTexture, clamp(uv + texel * vec2(0.0, -2.0), 0.0, 1.0)).rgb;
+    \\    glow *= 0.25;
+    \\    float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
+    \\    vec3 graded = mix(vec3(luma), color, 1.08 + brightness * 0.5);
+    \\    graded = ((graded - 0.5) * (1.04 + energy * 0.28)) + 0.5;
+    \\    graded += glow * (0.10 + energy * 0.20 + brightness * 0.12);
+    \\    return max(graded, vec3(0.0));
+    \\}
+    \\
+    \\vec3 applyHeatShift(vec2 uv) {
+    \\    vec2 centered = uv - 0.5;
+    \\    float bass = uAudioBands.y;
+    \\    float impact = uAudioVisualizer.x;
+    \\    float energy = uAudioVisualizer.y;
+    \\    float wave = sin((centered.y * 18.0) + (uTime * 2.2)) * (0.0015 + impact * 0.006);
+    \\    vec2 offset = vec2(wave + bass * 0.002, 0.0);
+    \\    float red = texture(uInputTexture, clamp(uv + offset, 0.0, 1.0)).r;
+    \\    float green = texture(uInputTexture, uv).g;
+    \\    float blue = texture(uInputTexture, clamp(uv - offset, 0.0, 1.0)).b;
+    \\    vec3 color = vec3(red, green, blue);
+    \\    vec3 warmth = vec3(1.08 + impact * 0.12, 1.0 + energy * 0.04, 0.92 - bass * 0.05);
+    \\    color *= warmth;
+    \\    color += vec3(0.08, 0.025, -0.02) * impact;
+    \\    return max(color, vec3(0.0));
+    \\}
+    \\
+    \\vec3 applyImpactFlash(vec2 uv) {
+    \\    vec2 centered = uv - 0.5;
+    \\    float radius = length(centered);
+    \\    float beat = uAudioState.x;
+    \\    float impact = uAudioVisualizer.x;
+    \\    float brightness = uAudioVisualizer.w;
+    \\    vec3 color = texture(uInputTexture, uv).rgb;
+    \\    float flash = clamp((impact * 0.75) + (beat * 0.55), 0.0, 1.5);
+    \\    float ring = 1.0 - smoothstep(0.18, 0.46, abs(radius - (0.22 + flash * 0.10)));
+    \\    float vignette = 1.0 - smoothstep(0.20, 0.82, radius);
+    \\    color = mix(color, vec3(1.0, 0.92, 0.78), flash * (0.10 + ring * 0.20));
+    \\    color += vec3(0.22, 0.12, 0.04) * flash * vignette;
+    \\    color = ((color - 0.5) * (1.0 + flash * 0.22 + brightness * 0.18)) + 0.5;
+    \\    return max(color, vec3(0.0));
+    \\}
+    \\
+    \\vec3 applyShockRing(vec2 uv) {
+    \\    vec2 centered = uv - 0.5;
+    \\    float radius = length(centered);
+    \\    float angle = atan(centered.y, centered.x);
+    \\    float beat = uAudioState.x;
+    \\    float impact = uAudioVisualizer.x;
+    \\    float drive = uAudioVisualizer.z;
+    \\    float brightness = uAudioVisualizer.w;
+    \\    float phase = fract(uTime * 0.12 + impact * 0.18 + beat * 0.12);
+    \\    float ring_radius = mix(0.12, 0.78, phase);
+    \\    float ring_width = 0.035 + impact * 0.05;
+    \\    float ring = 1.0 - smoothstep(ring_width, ring_width + 0.20, abs(radius - ring_radius));
+    \\    float ripple = sin((radius * 68.0) - (uTime * 7.0) + angle * 4.0) * ring;
+    \\    vec2 direction = normalize(centered + vec2(0.0001));
+    \\    vec2 warp = direction * (ripple * (0.006 + impact * 0.018));
+    \\    vec3 color;
+    \\    color.r = texture(uInputTexture, clamp(uv + warp * 1.4, 0.0, 1.0)).r;
+    \\    color.g = texture(uInputTexture, clamp(uv - warp * 0.6, 0.0, 1.0)).g;
+    \\    color.b = texture(uInputTexture, clamp(uv + vec2(-warp.y, warp.x), 0.0, 1.0)).b;
+    \\    color = mix(color, vec3(0.98, 0.72, 0.38), ring * (0.12 + impact * 0.28));
+    \\    color = ((color - 0.5) * (1.0 + ring * (0.35 + drive * 0.25))) + 0.5;
+    \\    color += vec3(0.16, 0.06, 0.22) * ring * brightness;
+    \\    return max(color, vec3(0.0));
+    \\}
+    \\
     \\void main() {
     \\    if (uEffect == 0) {
     \\        fragColor = vec4(applyPulseZoom(vUv), 1.0);
+    \\    } else if (uEffect == 1) {
+    \\        fragColor = vec4(applyGlowGrade(vUv), 1.0);
+    \\    } else if (uEffect == 2) {
+    \\        fragColor = vec4(applyHeatShift(vUv), 1.0);
+    \\    } else if (uEffect == 3) {
+    \\        fragColor = vec4(applyImpactFlash(vUv), 1.0);
+    \\    } else if (uEffect == 4) {
+    \\        fragColor = vec4(applyShockRing(vUv), 1.0);
     \\    } else {
     \\        fragColor = texture(uInputTexture, vUv);
     \\    }

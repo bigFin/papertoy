@@ -211,12 +211,16 @@ Why:
 - built-ins provide a stable vocabulary for presets
 - they make a good default desktop background possible
 
-Reasonable first built-ins:
+Implemented first built-ins:
 
 - `pulse_zoom`
 - `glow_grade`
 - `heat_shift`
 - `impact_flash`
+- `shock_ring`
+
+Reasonable future built-ins:
+
 - `drift_warp`
 
 These should eventually be implemented as normal passes, not hardcoded branches
@@ -331,6 +335,10 @@ Deliverables:
 - built-in post-process effects
 - desktop-friendly preset(s)
 - branch-local experimentation becomes reproducible config
+
+The current branch implements the first bounded built-in set and a sample
+desktop pipeline. Later work can add more effects without changing the linear
+pipeline contract.
 
 ## Open Design Questions
 

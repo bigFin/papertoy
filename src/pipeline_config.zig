@@ -144,7 +144,7 @@ test "PipelineConfig stores multiple postprocess passes inline" {
 
     const postprocess_passes = [_]PostProcessConfig{
         .{ .effect = .pulse_zoom, .strength = 0.5 },
-        .{ .effect = .pulse_zoom, .strength = 1.25 },
+        .{ .effect = .heat_shift, .strength = 1.25 },
     };
     const config = try PipelineConfig.withPostprocessPasses(source, resolution, 60, .{}, .{}, &postprocess_passes);
 
@@ -154,7 +154,7 @@ test "PipelineConfig stores multiple postprocess passes inline" {
     try std.testing.expectEqual(PostProcessEffect.pulse_zoom, config.passes[1].effect.?);
     try std.testing.expectEqual(@as(f32, 0.5), config.passes[1].strength);
     try std.testing.expectEqual(.postprocess, config.passes[2].kind);
-    try std.testing.expectEqual(PostProcessEffect.pulse_zoom, config.passes[2].effect.?);
+    try std.testing.expectEqual(PostProcessEffect.heat_shift, config.passes[2].effect.?);
     try std.testing.expectEqual(@as(f32, 1.25), config.passes[2].strength);
 }
 
@@ -214,7 +214,7 @@ test "loadFileConfig parses pass pipeline audio and modulation sections" {
         \\
         \\[[passes]]
         \\kind = postprocess
-        \\effect = pulse_zoom
+        \\effect = glow_grade
         \\strength = 0.75
         \\
         \\[audio]
@@ -246,7 +246,7 @@ test "loadFileConfig parses pass pipeline audio and modulation sections" {
     try std.testing.expectEqual(@as(usize, 2), postprocess_passes.len);
     try std.testing.expectEqual(PostProcessEffect.pulse_zoom, postprocess_passes[0].effect);
     try std.testing.expectEqual(@as(f32, 1.25), postprocess_passes[0].strength);
-    try std.testing.expectEqual(PostProcessEffect.pulse_zoom, postprocess_passes[1].effect);
+    try std.testing.expectEqual(PostProcessEffect.glow_grade, postprocess_passes[1].effect);
     try std.testing.expectEqual(@as(f32, 0.75), postprocess_passes[1].strength);
     try std.testing.expect(config.audio_enabled);
     try std.testing.expectEqual(audio.CaptureMode.source, config.audio_capture_mode);
@@ -393,7 +393,7 @@ test "loadFileConfigWithDiagnostic reports section key and effect errors" {
 
     try expectLoadDiagnostic(allocator, &tmp, "bad-section.toml", error.InvalidPipelineSection, 1, "unknown section [bogus]");
     try expectLoadDiagnostic(allocator, &tmp, "bad-key.toml", error.InvalidPipelineKey, 2, "unknown key \"wat\" in [audio]");
-    try expectLoadDiagnostic(allocator, &tmp, "bad-effect.toml", error.InvalidPipelineValue, 3, "unknown postprocess effect \"blurp\"; supported: pulse_zoom");
+    try expectLoadDiagnostic(allocator, &tmp, "bad-effect.toml", error.InvalidPipelineValue, 3, "unknown postprocess effect \"blurp\"; supported: pulse_zoom, glow_grade, heat_shift, impact_flash, shock_ring");
     try expectLoadDiagnostic(allocator, &tmp, "missing-env.toml", error.MissingEnvironmentVariable, 2, "pipeline path references an environment variable that is not set: ${PAPERTOY_TEST_MISSING_ENV_CE6B0CB1043B4DF3}");
 }
 

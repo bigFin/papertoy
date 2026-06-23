@@ -35,12 +35,22 @@ path = "${PAPERTOY_DEFAULT_SHADER}"
 [[passes]]
 kind = postprocess
 effect = pulse_zoom
-strength = 1.35
+strength = 0.95
 
 [[passes]]
 kind = postprocess
-effect = pulse_zoom
-strength = 0.65
+effect = glow_grade
+strength = 0.85
+
+[[passes]]
+kind = postprocess
+effect = heat_shift
+strength = 0.55
+
+[[passes]]
+kind = postprocess
+effect = impact_flash
+strength = 0.75
 
 [audio]
 enabled = true
@@ -63,7 +73,8 @@ Notes:
 - `visual_style` is one of `blend`, `pulse`, `drift`, `strobe`, `heat`.
 - this version requires exactly one `kind = base` pass
 - this version allows up to four ordered `kind = postprocess` passes
-- the first built-in postprocess effect is `pulse_zoom`
+- built-in postprocess effects are `pulse_zoom`, `glow_grade`, `heat_shift`,
+  `impact_flash`, and `shock_ring`
 - built-in postprocess passes currently support `strength`
 
 Compatibility:
