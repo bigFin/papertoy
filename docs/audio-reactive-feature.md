@@ -3,7 +3,8 @@
 ## Status
 
 Paper Toy now supports audio-reactive shader inputs and optional audio-driven
-time modulation.
+time modulation. Pipeline files can also use built-in postprocess effects that
+consume the same audio signals.
 
 Current implementation goals:
 
@@ -11,6 +12,7 @@ Current implementation goals:
 - expose generic audio uniforms to shaders
 - support both sink-monitor capture and microphone/source capture
 - provide an opt-in compatibility mode for unmodified `iTime`-driven shaders
+- compose built-in audio-reactive postprocess effects in pipeline files
 
 This is intentionally still a feature branch feature. The current behavior is
 useful and fun, but not yet the final shape of a polished visualizer system.
@@ -69,6 +71,25 @@ This mode is intended as a compatibility layer for shaders that only use
 `iTime`. It is fun and useful, but it should not be treated as the final
 general-purpose visualizer mapping.
 
+### Pipeline Postprocess Effects
+
+Pipeline files can enable audio capture and then chain built-in postprocess
+effects:
+
+```console
+papertoy --pipeline pipelines/desktop-audio-post.example.toml
+```
+
+Those effects use the same analyzer vocabulary as shaders. The current built-in
+set is:
+
+- `pulse_zoom`: impact-driven zoom, contrast, and subtle swirl
+- `glow_grade`: energy and brightness driven glow, saturation, and contrast
+- `heat_shift`: bass and impact driven warm color shift with chromatic motion
+- `impact_flash`: beat and impact driven flash, ring, and vignette
+- `shock_ring`: animated radial ripple and color separation for more chaotic
+  moments
+
 ## Current Behavior
 
 ### Device Selection
@@ -110,6 +131,8 @@ raw audio band values.
 
 - Audio-reactive uniforms are the main feature.
 - Audio-time-reactive mode is a secondary compatibility mode.
+- Pipeline postprocess effects are the preferred path for reusable generic
+  visual reactions.
 - Sink-monitor capture is the intended default for music-reactive visuals.
 - Source mode is still valuable as a live-performance or mic-reactive mode.
 
@@ -118,7 +141,7 @@ raw audio band values.
 - Generic time warping is fun but not a canonical visualizer mapping.
 - Unmodified shaders will only react as much as time modulation allows.
 - The strongest results will likely come from shaders explicitly using the new
-  audio uniforms.
+  audio uniforms or from pipeline effects composed around the shader output.
 - Output removal stops rendering on that output. Creating wallpaper surfaces for
   newly connected outputs still requires restarting Papertoy.
 - Runtime behavior has been tested through manual iteration, but this branch
@@ -128,9 +151,9 @@ raw audio band values.
 
 ### High Priority
 
-- Add a debug mode that prints or overlays live values such as target, impact,
-  beat, drive, and brightness.
-- Add non-time-based generic modulation paths driven by derived signals.
+- Add an overlay mode for live values such as target, impact, beat, drive, and
+  brightness. Terminal debug output already exists through `--audio-debug`.
+- Add discoverability for built-in postprocess effects.
 - Tune smoothing, decay, and weighting for the derived visualizer signals.
 
 ### Likely Direction
@@ -140,6 +163,8 @@ raw audio band values.
 - Use those signals for visible parameters such as zoom, displacement, glow,
   contrast, palette intensity, or camera motion.
 - Keep time warping as an optional special mode rather than the main mapping.
+- Keep built-in effects composable and parameter-light until real preset
+  requirements justify richer per-effect parameters.
 
 ### Explicitly Out Of Scope For This Branch Direction
 
@@ -156,3 +181,5 @@ rebased independently:
 - derived visualizer signals
 - sink-monitor capture fix
 - explicit capture mode selection
+- pipeline files and built-in postprocess effects
+- shared postprocess program and linear postprocess chaining

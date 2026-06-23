@@ -71,6 +71,13 @@ Audio-reactive shader uniforms and pipeline files are documented separately:
 - [Audio-reactive feature notes](docs/audio-reactive-feature.md)
 - [Pipeline files](pipelines/README.md)
 
+The tracked pipeline examples include an audio-reactive postprocess chain:
+
+```console
+$ PAPERTOY_DEFAULT_SHADER=/path/to/shader.glsl \
+    papertoy --pipeline pipelines/desktop-audio-post.example.toml
+```
+
 ### Configuration Examples
 
 **1. Performance Mode (Recommended for 4K)**

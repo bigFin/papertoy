@@ -81,6 +81,19 @@ Compatibility:
 
 - `[pipeline] base = "..."` still works as legacy sugar for a single base pass
 
+## Built-In Effects
+
+| Effect | Feel | Main audio drivers | Good use |
+| --- | --- | --- | --- |
+| `pulse_zoom` | zoom, contrast, subtle swirl | impact, energy, brightness | first pass after the base shader |
+| `glow_grade` | glow, saturation, contrast lift | energy, brightness | grading and bloom-like polish |
+| `heat_shift` | warm chromatic shimmer | bass, impact, energy | color movement and heat haze |
+| `impact_flash` | flash, ring, vignette | beat, impact, brightness | beat accents near the end of a chain |
+| `shock_ring` | radial ripple and color separation | beat, impact, drive, brightness | deliberately trippy accent chains |
+
+`strength` scales the audio-reactive inputs for that pass. Effects are ordered:
+each postprocess pass samples the output of the previous pass.
+
 ## CLI Interaction
 
 In this version, `--pipeline` owns audio and modulation settings. These flags
@@ -105,7 +118,8 @@ The remaining top-level runtime controls still come from the CLI:
 ## Examples
 
 - [desktop-audio.example.toml](desktop-audio.example.toml)
-- [desktop-audio-post.example.toml](desktop-audio-post.example.toml)
+- [desktop-audio-post.example.toml](desktop-audio-post.example.toml) uses a
+  four-pass built-in effect chain
 - [desktop-static.example.toml](desktop-static.example.toml)
 
 ## Current Limits

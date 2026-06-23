@@ -252,6 +252,7 @@ This avoids maintaining two rendering architectures long-term.
 - `effects.PostProcessEffect`
 - `PipelineRunner`
 - `postprocess.RenderTarget`
+- `postprocess.PostProcessProgram`
 - `postprocess.PostProcessPass`
 
 ### Responsibilities
@@ -275,13 +276,18 @@ This avoids maintaining two rendering architectures long-term.
 - execute pass sequence every frame
 - update common uniforms
 
+`postprocess.PostProcessProgram`
+
+- shared built-in postprocess shader program
+- uniform locations common to all postprocess passes
+- one compiled program reused across the ordered postprocess chain
+
 `postprocess.PostProcessPass`
 
-- built-in postprocess shader program
-- offscreen input texture bindings
-- postprocess-specific uniforms and effects
-- output target
-- parameter metadata
+- selected built-in postprocess effect
+- per-pass strength
+- per-pass timing state
+- current output resolution
 
 ## Implementation Phases
 
@@ -289,6 +295,8 @@ This avoids maintaining two rendering architectures long-term.
 
 Introduce the internal pipeline runner while keeping user-facing behavior
 unchanged.
+
+Status: implemented.
 
 Deliverables:
 
@@ -300,6 +308,8 @@ Deliverables:
 
 Add one explicit post-process pass.
 
+Status: implemented.
+
 Deliverables:
 
 - render base shader to texture
@@ -309,6 +319,8 @@ Deliverables:
 ### Phase 3
 
 Add multi-pass chaining.
+
+Status: implemented with a bounded linear chain.
 
 Deliverables:
 
@@ -320,6 +332,9 @@ Deliverables:
 
 Add TOML configuration.
 
+Status: implemented for one base pass plus up to four built-in postprocess
+passes.
+
 Deliverables:
 
 - `--pipeline <file>`
@@ -330,15 +345,17 @@ Deliverables:
 
 Add built-in effect library and presets.
 
+Status: implemented for the first built-in set and a desktop example preset.
+
 Deliverables:
 
 - built-in post-process effects
 - desktop-friendly preset(s)
 - branch-local experimentation becomes reproducible config
 
-The current branch implements the first bounded built-in set and a sample
-desktop pipeline. Later work can add more effects without changing the linear
-pipeline contract.
+The current branch implements the first bounded built-in set, a sample desktop
+pipeline, and a shared postprocess shader program. Later work can add more
+effects without changing the linear pipeline contract.
 
 ## Open Design Questions
 
@@ -369,11 +386,27 @@ graph system before the actual needs are proven.
 - inventing a custom DSL for pass configuration
 - trying to solve every future pass type in the first implementation
 
-## Recommended Next Commit Sequence
+## Current Branch Status
 
-- docs-only design commit for pipeline architecture
-- internal pipeline runner scaffold
-- offscreen base render target
-- first post-process pass
-- TOML config parser and validation
-- built-in effect registry
+Implemented in this branch:
+
+- audio-reactive shader uniforms and PipeWire capture
+- derived audio signals for impact, energy, drive, and brightness
+- direct shader mode mapped through the same `PipelineRunner`
+- TOML pipeline files
+- one base pass plus up to four ordered built-in postprocess passes
+- ping-pong render targets for linear postprocess chaining
+- shared compiled postprocess shader program per output pipeline
+- built-in effects: `pulse_zoom`, `glow_grade`, `heat_shift`,
+  `impact_flash`, and `shock_ring`
+- example pipelines under `pipelines/`
+
+Recommended next work:
+
+- add `--list-effects` or equivalent effect discovery
+- add one or two named preset files for different moods, including an explicit
+  `shock_ring` preset
+- consider simple per-effect parameter metadata before adding many more effects
+- decide whether file-based postprocess shaders belong in this branch or a
+  later branch
+- update screenshots or recordings once the branch is ready to publish
