@@ -246,8 +246,8 @@ This avoids maintaining two rendering architectures long-term.
 - `AudioConfig`
 - `PassConfig`
 - `PipelineRunner`
-- `RenderTarget`
-- `CompiledPass`
+- `postprocess.RenderTarget`
+- `postprocess.PostProcessPass`
 
 ### Responsibilities
 
@@ -264,10 +264,11 @@ This avoids maintaining two rendering architectures long-term.
 - execute pass sequence every frame
 - update common uniforms
 
-`CompiledPass`
+`postprocess.PostProcessPass`
 
-- shader program
-- input bindings
+- built-in postprocess shader program
+- offscreen input texture bindings
+- postprocess-specific uniforms and effects
 - output target
 - parameter metadata
 
