@@ -14,6 +14,7 @@ pub const PipelineRunner = struct {
     base_pass: *shader.Shader,
     post_passes: ?[]postprocess.PostProcessPass = null,
     post_pass_count: usize = 0,
+    post_program: ?postprocess.PostProcessProgram = null,
     render_targets: ?[]postprocess.RenderTarget = null,
     render_target_count: usize = 0,
 
@@ -44,11 +45,13 @@ pub const PipelineRunner = struct {
             self.render_target_count += 1;
         }
 
+        self.post_program = try postprocess.PostProcessProgram.init(allocator);
+
         self.post_passes = try allocator.alloc(postprocess.PostProcessPass, post_count);
         for (passes[1..], 0..) |post_config, i| {
             if (post_config.kind != .postprocess or post_config.effect == null) return error.InvalidPipelineValue;
 
-            self.post_passes.?[i] = try postprocess.PostProcessPass.init(allocator, config.resolution, post_config.effect.?);
+            self.post_passes.?[i] = postprocess.PostProcessPass.init(config.resolution, post_config.effect.?);
             self.post_pass_count += 1;
             self.post_passes.?[i].strength = post_config.strength;
         }
@@ -58,10 +61,13 @@ pub const PipelineRunner = struct {
 
     pub fn destroy(self: *PipelineRunner, allocator: Allocator) void {
         if (self.post_passes) |passes| {
-            for (passes[0..self.post_pass_count]) |*pass| pass.deinit(allocator);
             allocator.free(passes);
             self.post_passes = null;
             self.post_pass_count = 0;
+        }
+        if (self.post_program) |*program| {
+            program.deinit(allocator);
+            self.post_program = null;
         }
         if (self.render_targets) |targets| {
             for (targets[0..self.render_target_count]) |*target| target.deinit();
@@ -89,6 +95,7 @@ pub const PipelineRunner = struct {
         }
 
         const post_passes = self.post_passes.?[0..self.post_pass_count];
+        const post_program = &(self.post_program.?);
         const targets = self.render_targets.?[0..self.render_target_count];
 
         bindRenderTarget(&targets[0]);
@@ -102,12 +109,12 @@ pub const PipelineRunner = struct {
             } else {
                 const output_index: usize = if (input_index == 0) 1 else 0;
                 bindRenderTarget(&targets[output_index]);
-                try pass.render(targets[input_index].texture, snapshot);
+                try pass.render(post_program, targets[input_index].texture, snapshot);
                 input_index = output_index;
                 continue;
             }
 
-            try pass.render(targets[input_index].texture, snapshot);
+            try pass.render(post_program, targets[input_index].texture, snapshot);
         }
     }
 

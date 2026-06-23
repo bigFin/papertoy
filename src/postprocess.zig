@@ -219,11 +219,8 @@ const POST_PROCESS_FRAGMENT_SOURCE =
     \\}
 ;
 
-pub const PostProcessPass = struct {
+pub const PostProcessProgram = struct {
     program: gl.Program,
-    resolution: shader.Resolution,
-    effect: PostProcessEffect,
-    strength: f32 = 1.0,
     input_texture_uniform: ?u32,
     resolution_uniform: ?u32,
     audio_bands_uniform: ?u32,
@@ -231,10 +228,8 @@ pub const PostProcessPass = struct {
     audio_visualizer_uniform: ?u32,
     time_uniform: ?u32,
     effect_uniform: ?u32,
-    started: bool = false,
-    first_rendered: std.time.Instant = undefined,
 
-    pub fn init(allocator: Allocator, resolution: shader.Resolution, effect: PostProcessEffect) !PostProcessPass {
+    pub fn init(allocator: Allocator) !PostProcessProgram {
         const vert = gl.Shader.create(.vertex);
         defer vert.delete();
         vert.source(1, &.{POST_PROCESS_VERTEX_SOURCE[0..]});
@@ -267,8 +262,6 @@ pub const PostProcessPass = struct {
 
         return .{
             .program = program,
-            .resolution = resolution,
-            .effect = effect,
             .input_texture_uniform = program.uniformLocation("uInputTexture"),
             .resolution_uniform = program.uniformLocation("uResolution"),
             .audio_bands_uniform = program.uniformLocation("uAudioBands"),
@@ -279,12 +272,27 @@ pub const PostProcessPass = struct {
         };
     }
 
-    pub fn deinit(self: *PostProcessPass, allocator: Allocator) void {
+    pub fn deinit(self: *PostProcessProgram, allocator: Allocator) void {
         _ = allocator;
         self.program.delete();
     }
+};
 
-    pub fn render(self: *PostProcessPass, input_texture: gl.Texture, snapshot: AudioSnapshot) !void {
+pub const PostProcessPass = struct {
+    resolution: shader.Resolution,
+    effect: PostProcessEffect,
+    strength: f32 = 1.0,
+    started: bool = false,
+    first_rendered: std.time.Instant = undefined,
+
+    pub fn init(resolution: shader.Resolution, effect: PostProcessEffect) PostProcessPass {
+        return .{
+            .resolution = resolution,
+            .effect = effect,
+        };
+    }
+
+    pub fn render(self: *PostProcessPass, program: *PostProcessProgram, input_texture: gl.Texture, snapshot: AudioSnapshot) !void {
         if (!self.started) {
             self.first_rendered = try std.time.Instant.now();
             self.started = true;
@@ -294,14 +302,14 @@ pub const PostProcessPass = struct {
 
         const audio_uniforms = AudioUniformPayload.fromSnapshot(snapshot).withEffectStrength(self.strength);
 
-        self.program.use();
-        gl.uniform1i(self.input_texture_uniform, 0);
-        gl.uniform2f(self.resolution_uniform, @floatFromInt(self.resolution.width), @floatFromInt(self.resolution.height));
-        setUniform4f(self.audio_bands_uniform, audio_uniforms.bands);
-        setUniform4f(self.audio_state_uniform, audio_uniforms.state);
-        setUniform4f(self.audio_visualizer_uniform, audio_uniforms.visualizer);
-        gl.uniform1f(self.time_uniform, total_time / std.time.ns_per_s);
-        gl.uniform1i(self.effect_uniform, self.effect.shaderValue());
+        program.program.use();
+        gl.uniform1i(program.input_texture_uniform, 0);
+        gl.uniform2f(program.resolution_uniform, @floatFromInt(self.resolution.width), @floatFromInt(self.resolution.height));
+        setUniform4f(program.audio_bands_uniform, audio_uniforms.bands);
+        setUniform4f(program.audio_state_uniform, audio_uniforms.state);
+        setUniform4f(program.audio_visualizer_uniform, audio_uniforms.visualizer);
+        gl.uniform1f(program.time_uniform, total_time / std.time.ns_per_s);
+        gl.uniform1i(program.effect_uniform, self.effect.shaderValue());
 
         gl.activeTexture(.texture_0);
         bindTexture2D(input_texture);
