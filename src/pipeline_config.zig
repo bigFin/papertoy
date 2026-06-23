@@ -318,10 +318,19 @@ test "loadFileConfigWithDiagnostic reports section key and effect errors" {
         \\
         ,
     });
+    try tmp.dir.writeFile(.{
+        .sub_path = "missing-env.toml",
+        .data =
+        \\[pipeline]
+        \\base = "${PAPERTOY_TEST_MISSING_ENV_CE6B0CB1043B4DF3}"
+        \\
+        ,
+    });
 
     try expectLoadDiagnostic(allocator, &tmp, "bad-section.toml", error.InvalidPipelineSection, 1, "unknown section [bogus]");
     try expectLoadDiagnostic(allocator, &tmp, "bad-key.toml", error.InvalidPipelineKey, 2, "unknown key \"wat\" in [audio]");
     try expectLoadDiagnostic(allocator, &tmp, "bad-effect.toml", error.InvalidPipelineValue, 3, "unknown postprocess effect \"blurp\"; supported: pulse_zoom");
+    try expectLoadDiagnostic(allocator, &tmp, "missing-env.toml", error.MissingEnvironmentVariable, 2, "pipeline path references an environment variable that is not set: ${PAPERTOY_TEST_MISSING_ENV_CE6B0CB1043B4DF3}");
 }
 
 test "loadFileConfigWithDiagnostic reports pass validation lines" {
@@ -410,20 +419,6 @@ const ParseSection = enum {
     }
 };
 
-fn setDiagnostic(
-    allocator: Allocator,
-    diagnostic: ?*ParseDiagnostic,
-    line: usize,
-    comptime message_format: []const u8,
-    args: anytype,
-) !void {
-    if (diagnostic) |target| {
-        target.deinit(allocator);
-        target.line = line;
-        target.message = try std.fmt.allocPrint(allocator, message_format, args);
-    }
-}
-
 pub fn loadFileConfig(allocator: Allocator, pipeline_path: []const u8) !FileConfig {
     return loadFileConfigWithDiagnostic(allocator, pipeline_path, null);
 }
@@ -438,311 +433,336 @@ pub fn loadFileConfigWithDiagnostic(
     const source = try std.fs.cwd().readFileAlloc(allocator, pipeline_path, std.math.maxInt(usize));
     defer allocator.free(source);
 
-    var result = FileConfig{
-        .base_path = try allocator.dupe(u8, ""),
-    };
-    errdefer result.deinit(allocator);
+    var parser = try PipelineFileParser.init(allocator, pipeline_path, diagnostic);
+    errdefer parser.result.deinit(allocator);
+    defer parser.deinitScratch();
 
-    var section: ParseSection = .root;
-    var base_value: ?[]u8 = null;
-    var base_value_line: usize = 0;
-    defer if (base_value) |value| allocator.free(value);
+    return parser.parse(source);
+}
 
-    var current_pass_kind: PassKind = .base;
-    var current_pass_line: usize = 0;
-    var current_pass_path: ?[]u8 = null;
-    var current_pass_path_line: usize = 0;
-    defer if (current_pass_path) |value| allocator.free(value);
-    var current_pass_effect: ?PostProcessEffect = null;
-    var current_pass_effect_line: usize = 0;
-    var current_pass_strength: f32 = 1.0;
-    var in_pass = false;
+const PipelineFileParser = struct {
+    allocator: Allocator,
+    pipeline_path: []const u8,
+    diagnostic: ?*ParseDiagnostic,
+    result: FileConfig,
 
-    var lines = std.mem.splitScalar(u8, source, '\n');
-    var line_number: usize = 0;
-    while (lines.next()) |line_raw| {
-        line_number += 1;
-        const line = std.mem.trim(u8, line_raw, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
+    section: ParseSection = .root,
+    base_value: ?[]u8 = null,
+    base_value_line: usize = 0,
+    current_pass_kind: PassKind = .base,
+    current_pass_line: usize = 0,
+    current_pass_path: ?[]u8 = null,
+    current_pass_path_line: usize = 0,
+    current_pass_effect: ?PostProcessEffect = null,
+    current_pass_effect_line: usize = 0,
+    current_pass_strength: f32 = 1.0,
+    in_pass: bool = false,
+    line_number: usize = 0,
 
-        if (line[0] == '[') {
-            if (line[line.len - 1] != ']') {
-                try setDiagnostic(allocator, diagnostic, line_number, "section header must end with ']'", .{});
-                return error.InvalidPipelineSyntax;
-            }
+    fn init(allocator: Allocator, pipeline_path: []const u8, diagnostic: ?*ParseDiagnostic) !PipelineFileParser {
+        return .{
+            .allocator = allocator,
+            .pipeline_path = pipeline_path,
+            .diagnostic = diagnostic,
+            .result = .{ .base_path = try allocator.dupe(u8, "") },
+        };
+    }
 
-            if (in_pass) {
-                try finalizePass(
-                    allocator,
-                    diagnostic,
-                    current_pass_line,
-                    current_pass_path_line,
-                    current_pass_effect_line,
-                    &result,
-                    &base_value,
-                    &base_value_line,
-                    &current_pass_kind,
-                    &current_pass_path,
-                    &current_pass_effect,
-                    &current_pass_strength,
-                );
-                in_pass = false;
-            }
+    fn deinitScratch(self: *PipelineFileParser) void {
+        if (self.base_value) |value| {
+            self.allocator.free(value);
+            self.base_value = null;
+        }
+        if (self.current_pass_path) |value| {
+            self.allocator.free(value);
+            self.current_pass_path = null;
+        }
+    }
 
-            const is_array_table = line.len >= 4 and line[1] == '[' and line[line.len - 2] == ']';
-            const header = if (is_array_table)
-                std.mem.trim(u8, line[2 .. line.len - 2], " \t")
-            else
-                std.mem.trim(u8, line[1 .. line.len - 1], " \t");
+    fn setDiagnostic(self: *PipelineFileParser, line: usize, comptime message_format: []const u8, args: anytype) !void {
+        if (self.diagnostic) |target| {
+            target.deinit(self.allocator);
+            target.line = line;
+            target.message = try std.fmt.allocPrint(self.allocator, message_format, args);
+        }
+    }
 
-            if (std.mem.eql(u8, header, "pipeline")) {
-                if (is_array_table) {
-                    try setDiagnostic(allocator, diagnostic, line_number, "[pipeline] must be a table, not an array table", .{});
-                    return error.InvalidPipelineSyntax;
-                }
-                section = .pipeline;
-            } else if (std.mem.eql(u8, header, "audio")) {
-                if (is_array_table) {
-                    try setDiagnostic(allocator, diagnostic, line_number, "[audio] must be a table, not an array table", .{});
-                    return error.InvalidPipelineSyntax;
-                }
-                section = .audio;
-            } else if (std.mem.eql(u8, header, "modulation")) {
-                if (is_array_table) {
-                    try setDiagnostic(allocator, diagnostic, line_number, "[modulation] must be a table, not an array table", .{});
-                    return error.InvalidPipelineSyntax;
-                }
-                section = .modulation;
-            } else if (std.mem.eql(u8, header, "passes")) {
-                if (!is_array_table) {
-                    try setDiagnostic(allocator, diagnostic, line_number, "[passes] must be an array table: [[passes]]", .{});
-                    return error.InvalidPipelineSyntax;
-                }
-                section = .pass;
-                in_pass = true;
-                current_pass_line = line_number;
-                current_pass_kind = .base;
-                current_pass_effect = null;
-                current_pass_effect_line = 0;
-                current_pass_strength = 1.0;
-                if (current_pass_path) |old| {
-                    allocator.free(old);
-                    current_pass_path = null;
-                }
-                current_pass_path_line = 0;
+    fn parse(self: *PipelineFileParser, source: []const u8) !FileConfig {
+        var lines = std.mem.splitScalar(u8, source, '\n');
+        while (lines.next()) |line_raw| {
+            self.line_number += 1;
+            const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (line.len == 0 or line[0] == '#') continue;
+
+            if (line[0] == '[') {
+                try self.parseSection(line);
             } else {
-                try setDiagnostic(allocator, diagnostic, line_number, "unknown section [{s}]", .{header});
-                return error.InvalidPipelineSection;
+                try self.parseKeyValue(line);
             }
-            continue;
         }
 
+        return self.finish();
+    }
+
+    fn parseSection(self: *PipelineFileParser, line: []const u8) !void {
+        if (line[line.len - 1] != ']') {
+            try self.setDiagnostic(self.line_number, "section header must end with ']'", .{});
+            return error.InvalidPipelineSyntax;
+        }
+
+        if (self.in_pass) {
+            try self.finalizePass();
+            self.in_pass = false;
+        }
+
+        const is_array_table = line.len >= 4 and line[1] == '[' and line[line.len - 2] == ']';
+        const header = if (is_array_table)
+            std.mem.trim(u8, line[2 .. line.len - 2], " \t")
+        else
+            std.mem.trim(u8, line[1 .. line.len - 1], " \t");
+
+        if (std.mem.eql(u8, header, "pipeline")) {
+            if (is_array_table) {
+                try self.setDiagnostic(self.line_number, "[pipeline] must be a table, not an array table", .{});
+                return error.InvalidPipelineSyntax;
+            }
+            self.section = .pipeline;
+        } else if (std.mem.eql(u8, header, "audio")) {
+            if (is_array_table) {
+                try self.setDiagnostic(self.line_number, "[audio] must be a table, not an array table", .{});
+                return error.InvalidPipelineSyntax;
+            }
+            self.section = .audio;
+        } else if (std.mem.eql(u8, header, "modulation")) {
+            if (is_array_table) {
+                try self.setDiagnostic(self.line_number, "[modulation] must be a table, not an array table", .{});
+                return error.InvalidPipelineSyntax;
+            }
+            self.section = .modulation;
+        } else if (std.mem.eql(u8, header, "passes")) {
+            if (!is_array_table) {
+                try self.setDiagnostic(self.line_number, "[passes] must be an array table: [[passes]]", .{});
+                return error.InvalidPipelineSyntax;
+            }
+            self.beginPass();
+        } else {
+            try self.setDiagnostic(self.line_number, "unknown section [{s}]", .{header});
+            return error.InvalidPipelineSection;
+        }
+    }
+
+    fn beginPass(self: *PipelineFileParser) void {
+        self.section = .pass;
+        self.in_pass = true;
+        self.current_pass_line = self.line_number;
+        self.current_pass_kind = .base;
+        self.current_pass_effect = null;
+        self.current_pass_effect_line = 0;
+        self.current_pass_strength = 1.0;
+        if (self.current_pass_path) |old| {
+            self.allocator.free(old);
+            self.current_pass_path = null;
+        }
+        self.current_pass_path_line = 0;
+    }
+
+    fn parseKeyValue(self: *PipelineFileParser, line: []const u8) !void {
         const equals_index = std.mem.indexOfScalar(u8, line, '=') orelse {
-            try setDiagnostic(allocator, diagnostic, line_number, "expected key = value", .{});
+            try self.setDiagnostic(self.line_number, "expected key = value", .{});
             return error.InvalidPipelineSyntax;
         };
         const key = std.mem.trim(u8, line[0..equals_index], " \t");
         const value = std.mem.trim(u8, line[equals_index + 1 ..], " \t");
         if (key.len == 0 or value.len == 0) {
-            try setDiagnostic(allocator, diagnostic, line_number, "key and value must not be empty", .{});
+            try self.setDiagnostic(self.line_number, "key and value must not be empty", .{});
             return error.InvalidPipelineSyntax;
         }
 
-        switch (section) {
+        switch (self.section) {
             .pipeline => {
                 if (std.mem.eql(u8, key, "base")) {
-                    if (base_value) |old| allocator.free(old);
-                    base_value = parseString(allocator, value) catch |err| {
-                        try setDiagnostic(allocator, diagnostic, line_number, "invalid value for [pipeline].base: expected quoted string", .{});
+                    if (self.base_value) |old| self.allocator.free(old);
+                    self.base_value = parseString(self.allocator, value) catch |err| {
+                        try self.setDiagnostic(self.line_number, "invalid value for [pipeline].base: expected quoted string", .{});
                         return err;
                     };
-                    base_value_line = line_number;
+                    self.base_value_line = self.line_number;
                 } else {
-                    try setDiagnostic(allocator, diagnostic, line_number, "unknown key \"{s}\" in {s}", .{ key, section.label() });
+                    try self.unknownKey(key);
                     return error.InvalidPipelineKey;
                 }
             },
             .audio => {
                 if (std.mem.eql(u8, key, "enabled")) {
-                    result.audio_enabled = parseBool(value) catch |err| {
-                        try setDiagnostic(allocator, diagnostic, line_number, "invalid value for [audio].enabled: expected true or false", .{});
+                    self.result.audio_enabled = parseBool(value) catch |err| {
+                        try self.setDiagnostic(self.line_number, "invalid value for [audio].enabled: expected true or false", .{});
                         return err;
                     };
                 } else if (std.mem.eql(u8, key, "capture")) {
-                    result.audio_capture_mode = parseCaptureMode(value) catch |err| {
-                        try setDiagnostic(allocator, diagnostic, line_number, "invalid audio capture mode \"{s}\"; supported: sink, source", .{value});
+                    self.result.audio_capture_mode = parseCaptureMode(value) catch |err| {
+                        try self.setDiagnostic(self.line_number, "invalid audio capture mode \"{s}\"; supported: sink, source", .{value});
                         return err;
                     };
                 } else if (std.mem.eql(u8, key, "target")) {
-                    const parsed = parseString(allocator, value) catch |err| {
-                        try setDiagnostic(allocator, diagnostic, line_number, "invalid value for [audio].target: expected quoted string or \"auto\"", .{});
+                    const parsed = parseString(self.allocator, value) catch |err| {
+                        try self.setDiagnostic(self.line_number, "invalid value for [audio].target: expected quoted string or \"auto\"", .{});
                         return err;
                     };
-                    if (std.mem.eql(u8, parsed, "auto")) {
-                        allocator.free(parsed);
-                        if (result.audio_target) |old| allocator.free(old);
-                        result.audio_target = null;
-                    } else {
-                        if (result.audio_target) |old| allocator.free(old);
-                        result.audio_target = parsed;
-                    }
+                    self.setAudioTarget(parsed);
                 } else {
-                    try setDiagnostic(allocator, diagnostic, line_number, "unknown key \"{s}\" in {s}", .{ key, section.label() });
+                    try self.unknownKey(key);
                     return error.InvalidPipelineKey;
                 }
             },
             .modulation => {
                 if (std.mem.eql(u8, key, "time_reactive")) {
-                    result.time_modulation.enabled = parseBool(value) catch |err| {
-                        try setDiagnostic(allocator, diagnostic, line_number, "invalid value for [modulation].time_reactive: expected true or false", .{});
+                    self.result.time_modulation.enabled = parseBool(value) catch |err| {
+                        try self.setDiagnostic(self.line_number, "invalid value for [modulation].time_reactive: expected true or false", .{});
                         return err;
                     };
                 } else if (std.mem.eql(u8, key, "time_strength")) {
-                    result.time_modulation.strength = parseFloat(value) catch |err| {
-                        try setDiagnostic(allocator, diagnostic, line_number, "invalid value for [modulation].time_strength: expected number", .{});
+                    self.result.time_modulation.strength = parseFloat(value) catch |err| {
+                        try self.setDiagnostic(self.line_number, "invalid value for [modulation].time_strength: expected number", .{});
                         return err;
                     };
                 } else if (std.mem.eql(u8, key, "visual_reactive")) {
-                    result.visual_modulation.enabled = parseBool(value) catch |err| {
-                        try setDiagnostic(allocator, diagnostic, line_number, "invalid value for [modulation].visual_reactive: expected true or false", .{});
+                    self.result.visual_modulation.enabled = parseBool(value) catch |err| {
+                        try self.setDiagnostic(self.line_number, "invalid value for [modulation].visual_reactive: expected true or false", .{});
                         return err;
                     };
                 } else if (std.mem.eql(u8, key, "visual_strength")) {
-                    result.visual_modulation.strength = parseFloat(value) catch |err| {
-                        try setDiagnostic(allocator, diagnostic, line_number, "invalid value for [modulation].visual_strength: expected number", .{});
+                    self.result.visual_modulation.strength = parseFloat(value) catch |err| {
+                        try self.setDiagnostic(self.line_number, "invalid value for [modulation].visual_strength: expected number", .{});
                         return err;
                     };
                 } else if (std.mem.eql(u8, key, "visual_style")) {
-                    result.visual_modulation.style = parseVisualStyle(value) catch |err| {
-                        try setDiagnostic(allocator, diagnostic, line_number, "invalid visual style \"{s}\"; supported: blend, pulse, drift, strobe, heat", .{value});
+                    self.result.visual_modulation.style = parseVisualStyle(value) catch |err| {
+                        try self.setDiagnostic(self.line_number, "invalid visual style \"{s}\"; supported: blend, pulse, drift, strobe, heat", .{value});
                         return err;
                     };
                 } else {
-                    try setDiagnostic(allocator, diagnostic, line_number, "unknown key \"{s}\" in {s}", .{ key, section.label() });
+                    try self.unknownKey(key);
                     return error.InvalidPipelineKey;
                 }
             },
             .pass => {
                 if (std.mem.eql(u8, key, "kind")) {
-                    current_pass_kind = parsePassKind(value) catch |err| {
-                        try setDiagnostic(allocator, diagnostic, line_number, "invalid pass kind \"{s}\"; supported: base, postprocess", .{value});
+                    self.current_pass_kind = parsePassKind(value) catch |err| {
+                        try self.setDiagnostic(self.line_number, "invalid pass kind \"{s}\"; supported: base, postprocess", .{value});
                         return err;
                     };
                 } else if (std.mem.eql(u8, key, "path")) {
-                    if (current_pass_path) |old| allocator.free(old);
-                    current_pass_path = parseString(allocator, value) catch |err| {
-                        try setDiagnostic(allocator, diagnostic, line_number, "invalid pass path: expected quoted string", .{});
+                    if (self.current_pass_path) |old| self.allocator.free(old);
+                    self.current_pass_path = parseString(self.allocator, value) catch |err| {
+                        try self.setDiagnostic(self.line_number, "invalid pass path: expected quoted string", .{});
                         return err;
                     };
-                    current_pass_path_line = line_number;
+                    self.current_pass_path_line = self.line_number;
                 } else if (std.mem.eql(u8, key, "effect")) {
-                    current_pass_effect = parsePostProcessEffect(value) catch |err| {
-                        try setDiagnostic(allocator, diagnostic, line_number, "unknown postprocess effect \"{s}\"; supported: {s}", .{ value, effects.supportedConfigNames() });
+                    self.current_pass_effect = parsePostProcessEffect(value) catch |err| {
+                        try self.setDiagnostic(self.line_number, "unknown postprocess effect \"{s}\"; supported: {s}", .{ value, effects.supportedConfigNames() });
                         return err;
                     };
-                    current_pass_effect_line = line_number;
+                    self.current_pass_effect_line = self.line_number;
                 } else if (std.mem.eql(u8, key, "strength")) {
-                    current_pass_strength = parseFloat(value) catch |err| {
-                        try setDiagnostic(allocator, diagnostic, line_number, "invalid pass strength: expected number", .{});
+                    self.current_pass_strength = parseFloat(value) catch |err| {
+                        try self.setDiagnostic(self.line_number, "invalid pass strength: expected number", .{});
                         return err;
                     };
                 } else {
-                    try setDiagnostic(allocator, diagnostic, line_number, "unknown key \"{s}\" in {s}", .{ key, section.label() });
+                    try self.unknownKey(key);
                     return error.InvalidPipelineKey;
                 }
             },
             .root => {
-                try setDiagnostic(allocator, diagnostic, line_number, "key \"{s}\" must be inside a section", .{key});
+                try self.setDiagnostic(self.line_number, "key \"{s}\" must be inside a section", .{key});
                 return error.InvalidPipelineSyntax;
             },
         }
     }
 
-    if (in_pass) {
-        try finalizePass(
-            allocator,
-            diagnostic,
-            current_pass_line,
-            current_pass_path_line,
-            current_pass_effect_line,
-            &result,
-            &base_value,
-            &base_value_line,
-            &current_pass_kind,
-            &current_pass_path,
-            &current_pass_effect,
-            &current_pass_strength,
-        );
-        in_pass = false;
-    }
-
-    const base = base_value orelse {
-        try setDiagnostic(allocator, diagnostic, @max(line_number, 1), "pipeline file must define a base shader using [pipeline].base or a base pass path", .{});
-        return error.MissingBaseShader;
-    };
-    allocator.free(result.base_path);
-    result.base_path = resolvePipelinePath(allocator, pipeline_path, base) catch |err| {
-        if (err == error.MissingEnvironmentVariable) {
-            try setDiagnostic(allocator, diagnostic, base_value_line, "pipeline path references an environment variable that is not set: {s}", .{base});
+    fn setAudioTarget(self: *PipelineFileParser, parsed: []u8) void {
+        if (std.mem.eql(u8, parsed, "auto")) {
+            self.allocator.free(parsed);
+            if (self.result.audio_target) |old| self.allocator.free(old);
+            self.result.audio_target = null;
+        } else {
+            if (self.result.audio_target) |old| self.allocator.free(old);
+            self.result.audio_target = parsed;
         }
-        return err;
-    };
-    return result;
-}
-
-fn finalizePass(
-    allocator: Allocator,
-    diagnostic: ?*ParseDiagnostic,
-    pass_line: usize,
-    pass_path_line: usize,
-    pass_effect_line: usize,
-    result: *FileConfig,
-    base_value: *?[]u8,
-    base_value_line: *usize,
-    pass_kind: *PassKind,
-    pass_path: *?[]u8,
-    pass_effect: *?PostProcessEffect,
-    pass_strength: *f32,
-) !void {
-    switch (pass_kind.*) {
-        .base => {
-            const path = pass_path.* orelse {
-                try setDiagnostic(allocator, diagnostic, pass_line, "base pass must define path", .{});
-                return error.MissingPassPath;
-            };
-            if (pass_effect.* != null) {
-                try setDiagnostic(allocator, diagnostic, pass_effect_line, "base pass cannot define effect", .{});
-                return error.InvalidPipelineSyntax;
-            }
-            if (base_value.* != null) {
-                try setDiagnostic(allocator, diagnostic, pass_line, "pipeline can only define one base shader", .{});
-                return error.InvalidPipelineSyntax;
-            }
-            base_value.* = path;
-            base_value_line.* = pass_path_line;
-            pass_path.* = null;
-        },
-        .postprocess => {
-            if (pass_path.* != null) {
-                try setDiagnostic(allocator, diagnostic, pass_path_line, "postprocess pass cannot define path", .{});
-                return error.InvalidPipelineSyntax;
-            }
-            const effect = pass_effect.* orelse {
-                try setDiagnostic(allocator, diagnostic, pass_line, "postprocess pass must define effect", .{});
-                return error.MissingPassEffect;
-            };
-            if (result.post_effect != null) {
-                try setDiagnostic(allocator, diagnostic, pass_line, "pipeline can only define one postprocess pass", .{});
-                return error.InvalidPipelineSyntax;
-            }
-            result.post_effect = effect;
-            result.post_strength = pass_strength.*;
-        },
     }
 
-    pass_effect.* = null;
-    pass_strength.* = 1.0;
-}
+    fn unknownKey(self: *PipelineFileParser, key: []const u8) !void {
+        try self.setDiagnostic(self.line_number, "unknown key \"{s}\" in {s}", .{ key, self.section.label() });
+    }
+
+    fn finish(self: *PipelineFileParser) !FileConfig {
+        if (self.in_pass) {
+            try self.finalizePass();
+            self.in_pass = false;
+        }
+
+        const base = self.base_value orelse {
+            try self.setDiagnostic(@max(self.line_number, 1), "pipeline file must define a base shader using [pipeline].base or a base pass path", .{});
+            return error.MissingBaseShader;
+        };
+        const resolved_base_path = resolvePipelinePath(self.allocator, self.pipeline_path, base) catch |err| {
+            if (err == error.MissingEnvironmentVariable) {
+                try self.setDiagnostic(self.base_value_line, "pipeline path references an environment variable that is not set: {s}", .{base});
+            }
+            return err;
+        };
+        self.allocator.free(self.result.base_path);
+        self.result.base_path = resolved_base_path;
+        return self.result;
+    }
+
+    fn finalizePass(self: *PipelineFileParser) !void {
+        switch (self.current_pass_kind) {
+            .base => try self.finalizeBasePass(),
+            .postprocess => try self.finalizePostProcessPass(),
+        }
+
+        self.current_pass_effect = null;
+        self.current_pass_strength = 1.0;
+    }
+
+    fn finalizeBasePass(self: *PipelineFileParser) !void {
+        const path = self.current_pass_path orelse {
+            try self.setDiagnostic(self.current_pass_line, "base pass must define path", .{});
+            return error.MissingPassPath;
+        };
+        if (self.current_pass_effect != null) {
+            try self.setDiagnostic(self.current_pass_effect_line, "base pass cannot define effect", .{});
+            return error.InvalidPipelineSyntax;
+        }
+        if (self.base_value != null) {
+            try self.setDiagnostic(self.current_pass_line, "pipeline can only define one base shader", .{});
+            return error.InvalidPipelineSyntax;
+        }
+
+        self.base_value = path;
+        self.base_value_line = self.current_pass_path_line;
+        self.current_pass_path = null;
+    }
+
+    fn finalizePostProcessPass(self: *PipelineFileParser) !void {
+        if (self.current_pass_path != null) {
+            try self.setDiagnostic(self.current_pass_path_line, "postprocess pass cannot define path", .{});
+            return error.InvalidPipelineSyntax;
+        }
+        const effect = self.current_pass_effect orelse {
+            try self.setDiagnostic(self.current_pass_line, "postprocess pass must define effect", .{});
+            return error.MissingPassEffect;
+        };
+        if (self.result.post_effect != null) {
+            try self.setDiagnostic(self.current_pass_line, "pipeline can only define one postprocess pass", .{});
+            return error.InvalidPipelineSyntax;
+        }
+        self.result.post_effect = effect;
+        self.result.post_strength = self.current_pass_strength;
+    }
+};
 
 fn resolvePipelinePath(allocator: Allocator, pipeline_path: []const u8, target: []const u8) ![]u8 {
     const expanded_target = try expandEnvironmentReference(allocator, target);
