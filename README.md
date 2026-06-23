@@ -61,6 +61,11 @@ $ zig-out/bin/papertoy /path/to/shader.glsl
 - `--frame-rate <fps>`: Set the default frame rate for selected outputs. Per-output `frame-rate` values override this.
 - `--resolution <WxH>`: Set the default positive logical resolution for selected outputs. Per-output `resolution` values override this.
 
+If an output is removed while Papertoy is running, rendering stops for that
+output. Newly connected outputs are discovered by the Wayland registry, but
+Papertoy does not yet create new wallpaper surfaces for them until the next
+launch.
+
 Audio-reactive shader uniforms and pipeline files are documented separately:
 
 - [Audio-reactive feature notes](docs/audio-reactive-feature.md)

@@ -119,6 +119,8 @@ raw audio band values.
 - Unmodified shaders will only react as much as time modulation allows.
 - The strongest results will likely come from shaders explicitly using the new
   audio uniforms.
+- Output removal stops rendering on that output. Creating wallpaper surfaces for
+  newly connected outputs still requires restarting Papertoy.
 - Runtime behavior has been tested through manual iteration, but this branch
   still needs broader real-world tuning.
 

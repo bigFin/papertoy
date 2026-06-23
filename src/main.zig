@@ -48,8 +48,18 @@ const Output = struct {
     /// is updated until the compositor sends the `done` event again.
     ready: bool = false,
 
-    /// The ID of the output.
+    /// The registry global name for this output. This is the value reported by
+    /// `wl_registry.global` and `wl_registry.global_remove`.
+    global_name: u32,
+    /// The proxy ID of the output.
     id: u32,
+    /// Whether the compositor has removed this output global.
+    removed: bool = false,
+    /// The number of active wallpapers using this output.
+    active_papers: usize = 0,
+    invalid_metadata: bool = false,
+    invalid_geometry: bool = false,
+    invalid_scale: bool = false,
     /// The name of the output. Set by the `name` event.
     name: ?[]const u8 = null,
     /// The human-friendly description of the output. Set by the `description` event.
@@ -71,13 +81,14 @@ const Output = struct {
     transform: wl.Output.Transform = .normal,
 
     /// Create a new output object.
-    pub fn create(allocator: Allocator, output: *wl.Output) !*Output {
+    pub fn create(allocator: Allocator, global_name: u32, output: *wl.Output) !*Output {
         const self = try allocator.create(Output);
         errdefer allocator.destroy(self);
 
         self.* = .{
             .allocator = allocator,
             .output = output,
+            .global_name = global_name,
             .id = output.getId(),
         };
         output.setListener(*Output, listener, self);
@@ -92,9 +103,23 @@ const Output = struct {
 
     /// Destroy the output object and free its resources.
     pub fn destroy(self: *Output) void {
+        self.output.release();
         if (self.name) |n| self.allocator.free(n);
         if (self.description) |description| self.allocator.free(description);
         self.allocator.destroy(self);
+    }
+
+    pub fn retain(self: *Output) void {
+        self.active_papers += 1;
+    }
+
+    pub fn release(self: *Output) void {
+        std.debug.assert(self.active_papers > 0);
+        self.active_papers -= 1;
+    }
+
+    fn isInvalid(self: *const Output) bool {
+        return self.invalid_metadata or self.invalid_geometry or self.invalid_scale;
     }
 
     /// Handle an output event.
@@ -103,37 +128,64 @@ const Output = struct {
 
         switch (event) {
             .name => |name| {
-                if (self.name) |n| self.allocator.free(n);
                 self.ready = false;
-                self.name = self.allocator.dupe(u8, std.mem.sliceTo(name.name, 0)) catch @panic("OOM");
+                const new_name = self.allocator.dupe(u8, std.mem.sliceTo(name.name, 0)) catch {
+                    self.invalid_metadata = true;
+                    std.log.err("failed to store name for output global {}", .{self.global_name});
+                    return;
+                };
+                if (self.name) |n| self.allocator.free(n);
+                self.name = new_name;
+                self.invalid_metadata = false;
             },
             .description => |description| {
-                if (self.description) |d| self.allocator.free(d);
                 self.ready = false;
-                self.description = self.allocator.dupe(u8, std.mem.sliceTo(description.description, 0)) catch @panic("OOM");
+                const new_description = self.allocator.dupe(u8, std.mem.sliceTo(description.description, 0)) catch {
+                    std.log.warn("failed to store description for output global {}", .{self.global_name});
+                    return;
+                };
+                if (self.description) |d| self.allocator.free(d);
+                self.description = new_description;
             },
             .mode => |mode| {
                 self.ready = false;
 
-                if (mode.width <= 0) @panic("output width is non-positive?!");
-                if (mode.height <= 0) @panic("output height is non-positive?!");
-                if (mode.refresh <= 0) @panic("output refresh rate is non-positive?!");
+                if (mode.width <= 0 or mode.height <= 0) {
+                    self.invalid_geometry = true;
+                    std.log.err("output global {} reported invalid mode {}x{}", .{ self.global_name, mode.width, mode.height });
+                    return;
+                }
 
                 self.width = @intCast(mode.width);
                 self.height = @intCast(mode.height);
-                self.refresh_rate = @intCast(@divTrunc(mode.refresh, 1000));
+                const refresh_hz = if (mode.refresh > 0) @divTrunc(mode.refresh, 1000) else 0;
+                self.refresh_rate = if (refresh_hz > 0) @intCast(refresh_hz) else 60;
+                if (refresh_hz <= 0) {
+                    std.log.warn("output global {} reported unknown refresh rate, using 60Hz for shader metadata", .{self.global_name});
+                }
+                self.invalid_geometry = false;
             },
             .scale => |scale| {
                 self.ready = false;
 
-                if (scale.factor <= 0) @panic("output scale factor is non-positive?!");
+                if (scale.factor <= 0) {
+                    self.invalid_scale = true;
+                    std.log.err("output global {} reported invalid scale factor {}", .{ self.global_name, scale.factor });
+                    return;
+                }
 
                 self.scale = @intCast(scale.factor);
+                self.invalid_scale = false;
             },
             .done => {
-                self.ready = true;
+                if (self.name == null) {
+                    self.invalid_metadata = true;
+                    std.log.err("output global {} did not report a name", .{self.global_name});
+                }
+                self.ready = !self.isInvalid();
             },
             .geometry => |geometry| {
+                self.ready = false;
                 self.transform = geometry.transform;
             },
         }
@@ -142,6 +194,7 @@ const Output = struct {
     /// Roundtrip the display until this output is ready.
     pub fn wait(self: *Output, display: *wl.Display) !void {
         while (!self.ready) {
+            if (self.isInvalid()) return error.InvalidOutput;
             if (display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
         }
     }
@@ -172,6 +225,7 @@ const RegistryListener = struct {
     pub fn deinit(self: *RegistryListener) void {
         if (self.layer_shell_v1) |layer_shell_v1| layer_shell_v1.destroy();
         if (self.fractional_scale_manager_v1) |fractional_scale_manager_v1| fractional_scale_manager_v1.destroy();
+        if (self.viewporter_v1) |viewporter_v1| viewporter_v1.destroy();
 
         for (self.outputs.items) |output| {
             output.destroy();
@@ -197,37 +251,56 @@ const RegistryListener = struct {
                 // Outputs
                 if (std.mem.orderZ(u8, global.interface, wl.Output.interface.name) == .eq) {
                     const output = registry.bind(global.name, wl.Output, 4) catch return;
-                    self.addOutput(output) catch |err| std.debug.panic("Failed to add output: {}", .{err});
+                    self.addOutput(global.name, output) catch |err| {
+                        std.log.warn("failed to add output global {}: {}", .{ global.name, err });
+                    };
                 }
             },
             .global_remove => |global_remove| {
-                _ = global_remove;
-                // if (std.mem.orderZ(u8, global_remove.interface, wl.Output.interface.name) == .eq) {
-                //     if (!self.removeOutput(global_remove.name)) {
-                //         std.debug.print("!!! Removing output ID {} but it was not found!\n", .{global_remove.name});
-                //     }
-                // }
+                _ = self.removeOutput(global_remove.name);
             },
         }
     }
 
-    fn addOutput(self: *RegistryListener, wl_output: *wl.Output) !void {
-        const output = try Output.create(self.allocator, wl_output);
+    fn addOutput(self: *RegistryListener, global_name: u32, wl_output: *wl.Output) !void {
+        const output = Output.create(self.allocator, global_name, wl_output) catch |err| {
+            wl_output.release();
+            return err;
+        };
         errdefer output.destroy();
 
         try output.wait(self.display);
         try self.outputs.append(self.allocator, output);
     }
 
-    fn removeOutput(self: *RegistryListener, id: c_uint) bool {
+    fn removeOutput(self: *RegistryListener, global_name: u32) bool {
         for (self.outputs.items, 0..) |item, i| {
-            if (item.getId() == id) {
+            if (item.global_name == global_name) {
+                item.removed = true;
+                if (item.active_papers != 0) {
+                    std.log.info("output {s} was removed; waiting for {} active wallpaper(s) to stop", .{ item.name orelse "unknown", item.active_papers });
+                    return true;
+                }
                 item.destroy();
-                self.outputs.orderedRemove(i);
+                _ = self.outputs.orderedRemove(i);
                 return true;
             }
         }
         return false;
+    }
+
+    fn pruneRemovedOutputs(self: *RegistryListener) void {
+        var i: usize = 0;
+        while (i < self.outputs.items.len) {
+            const output = self.outputs.items[i];
+            if (!output.removed or output.active_papers != 0) {
+                i += 1;
+                continue;
+            }
+
+            output.destroy();
+            _ = self.outputs.orderedRemove(i);
+        }
     }
 };
 
@@ -384,6 +457,7 @@ const WlrSurface = struct {
         height: u32,
     } = null,
     config_dirty: bool = false,
+    closed: bool = false,
 
     /// Create a wlroots surface with EGL for GPU rendering.
     pub fn createEgl(allocator: Allocator, gl_display: *GLDisplay, compositor: *wl.Compositor, layer_shell: *zwlr.LayerShellV1, fractional_scale_manager: ?*wp.FractionalScaleManagerV1, viewporter: ?*wp.Viewporter, output: *Output, custom_resolution: ?Resolution) !*WlrSurface {
@@ -393,6 +467,11 @@ const WlrSurface = struct {
         self.allocator = allocator;
         self.output = output;
         self.gl_display = gl_display;
+        self.pending_config = null;
+        self.config_dirty = false;
+        self.closed = false;
+        self.fractional_scale = null;
+        self.viewport = null;
         self.gl_context = try GLContext.init(gl_display);
         errdefer self.gl_context.deinit();
 
@@ -447,14 +526,17 @@ const WlrSurface = struct {
 
         if (fractional_scale_manager) |manager| {
             self.fractional_scale = try FractionalScale.create(allocator, manager, self.wl_surface);
-            self.viewport = try viewporter.?.getViewport(self.wl_surface);
+            errdefer if (self.fractional_scale) |scale| scale.destroy(allocator);
+
+            const viewporter_v1 = viewporter orelse return error.NoViewporter;
+            self.viewport = try viewporter_v1.getViewport(self.wl_surface);
+            errdefer if (self.viewport) |viewport_object| viewport_object.destroy();
         } else {
             // No fractional scale manager available for the current compositor.
             std.log.warn("No fractional scale manager available, using output scale instead", .{});
             self.fractional_scale = null;
             self.viewport = null;
         }
-        errdefer if (self.fractional_scale) |scale| scale.destroy(allocator);
 
         // Roundtrip once to sync the configuration.
         self.wl_surface.commit();
@@ -465,9 +547,12 @@ const WlrSurface = struct {
     /// Deinitialize the wlroots surface.
     pub fn deinit(self: *WlrSurface) void {
         _ = egl.eglDestroySurface(self.gl_display.egl_display, self.egl_surface);
-        self.gl_context.deinit();
         if (self.fractional_scale) |scale| scale.destroy(self.allocator);
         if (self.viewport) |viewport| viewport.destroy();
+        self.wlr_surface.destroy();
+        self.wl_egl_window.destroy();
+        self.wl_surface.destroy();
+        self.gl_context.deinit();
         self.allocator.destroy(self);
     }
 
@@ -570,7 +655,9 @@ const WlrSurface = struct {
                 };
                 self.config_dirty = true;
             },
-            .closed => {},
+            .closed => {
+                self.closed = true;
+            },
         }
     }
 };
@@ -1106,6 +1193,8 @@ const Paper = struct {
         errdefer allocator.destroy(self);
 
         self.allocator = allocator;
+        output.retain();
+        errdefer output.release();
 
         self.surface = try WlrSurface.createEgl(allocator, gl_display, compositor, layer_shell, fractional_scale_manager, viewporter, output, custom_resolution);
         errdefer self.surface.deinit();
@@ -1150,7 +1239,9 @@ const Paper = struct {
         if (self.next_frame_strategy == .Vsync) {
             self.next_frame_strategy.Vsync.destroy();
         }
+        const output = self.surface.output;
         self.surface.deinit();
+        output.release();
         self.allocator.destroy(self);
     }
 
@@ -1161,7 +1252,35 @@ const Paper = struct {
             gl.viewport(0, 0, self.surface.width, self.surface.height);
         }
     }
+
+    pub fn shouldStop(self: *const Paper) bool {
+        return self.surface.closed or self.surface.output.removed;
+    }
 };
+
+fn pruneStoppedPapers(papers: *std.ArrayListUnmanaged(*Paper), registry_listener: *RegistryListener) usize {
+    var i: usize = 0;
+    while (i < papers.items.len) {
+        const paper = papers.items[i];
+        if (!paper.shouldStop()) {
+            i += 1;
+            continue;
+        }
+
+        const output = paper.surface.output;
+        if (paper.surface.closed) {
+            std.log.info("surface for output {s} was closed; stopping wallpaper", .{output.name orelse "unknown"});
+        } else {
+            std.log.info("output {s} was removed; stopping wallpaper", .{output.name orelse "unknown"});
+        }
+
+        paper.destroy();
+        _ = papers.orderedRemove(i);
+        registry_listener.pruneRemovedOutputs();
+    }
+
+    return papers.items.len;
+}
 
 pub fn main() !u8 {
     const allocator = std.heap.c_allocator;
@@ -1467,6 +1586,11 @@ pub fn main() !u8 {
         // Always dispatch pending events first.
         const dispatched = display.dispatchPending();
         if (dispatched != .SUCCESS) return error.DispatchFailed;
+
+        if (pruneStoppedPapers(&papers, &registry_listener) == 0) {
+            std.log.warn("no active outputs remain, exiting", .{});
+            return 0;
+        }
 
         const now = try std.time.Instant.now();
         const now_ns = now.since(std.mem.zeroes(std.time.Instant));
