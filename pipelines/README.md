@@ -77,7 +77,8 @@ Notes:
 - this version allows up to four ordered `kind = postprocess` passes
 - built-in postprocess effects are `pulse_zoom`, `glow_grade`, `heat_shift`,
   `impact_flash`, and `shock_ring`
-- built-in postprocess passes currently support non-negative finite `strength`
+- `time_strength`, `visual_strength`, and postprocess `strength` must be
+  non-negative finite numbers
 
 Compatibility:
 
