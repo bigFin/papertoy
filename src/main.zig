@@ -1497,16 +1497,6 @@ pub fn main() !u8 {
                 .blend,
         };
 
-    var audio_analyzer = AudioAnalyzer.init(allocator, .{
-        .enabled = if (pipeline_file_config) |config|
-            config.audio_enabled or config.time_modulation.enabled or config.visual_modulation.enabled
-        else
-            options.options.@"audio-reactive" or options.options.@"audio-time-reactive" or options.options.@"audio-visual-reactive",
-        .target = if (pipeline_file_config) |config| config.audio_target else options.options.@"audio-target",
-        .capture_mode = if (pipeline_file_config) |config| config.audio_capture_mode else cli_capture_mode,
-    });
-    defer audio_analyzer.deinit();
-
     if (!isNonNegativeFinite(effective_time_modulation.strength)) {
         std.log.err("audio time strength must be a non-negative finite number, got {d}", .{effective_time_modulation.strength});
         return 1;
@@ -1516,6 +1506,16 @@ pub fn main() !u8 {
         std.log.err("audio visual strength must be a non-negative finite number, got {d}", .{effective_visual_modulation.strength});
         return 1;
     }
+
+    var audio_analyzer = AudioAnalyzer.init(allocator, .{
+        .enabled = if (pipeline_file_config) |config|
+            config.audio_enabled or config.time_modulation.enabled or config.visual_modulation.enabled
+        else
+            options.options.@"audio-reactive" or options.options.@"audio-time-reactive" or options.options.@"audio-visual-reactive",
+        .target = if (pipeline_file_config) |config| config.audio_target else options.options.@"audio-target",
+        .capture_mode = if (pipeline_file_config) |config| config.audio_capture_mode else cli_capture_mode,
+    });
+    defer audio_analyzer.deinit();
 
     const effective_postprocess_passes: []const PostProcessConfig = if (pipeline_file_config) |*config|
         config.activePostprocessPasses()
