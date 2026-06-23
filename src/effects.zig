@@ -1,5 +1,9 @@
 const std = @import("std");
 
+pub fn supportedConfigNames() []const u8 {
+    return "pulse_zoom";
+}
+
 pub const PostProcessEffect = enum(i32) {
     pulse_zoom = 0,
 
@@ -24,6 +28,7 @@ test "PostProcessEffect maps config names and shader values" {
 
     try std.testing.expectEqual(PostProcessEffect.pulse_zoom, effect);
     try std.testing.expectEqualStrings("pulse_zoom", effect.configName());
+    try std.testing.expectEqualStrings("pulse_zoom", supportedConfigNames());
     try std.testing.expectEqual(@as(i32, 0), effect.shaderValue());
     try std.testing.expectEqual(@as(?PostProcessEffect, null), PostProcessEffect.parseConfigName("unknown"));
 }

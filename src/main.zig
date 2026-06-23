@@ -21,8 +21,9 @@ const PipelineRunner = @import("pipeline.zig").PipelineRunner;
 const pipeline_config = @import("pipeline_config.zig");
 const PipelineConfig = pipeline_config.PipelineConfig;
 const PipelineFileConfig = pipeline_config.FileConfig;
+const PipelineParseDiagnostic = pipeline_config.ParseDiagnostic;
 const PostProcessEffect = effects.PostProcessEffect;
-const loadPipelineFileConfig = pipeline_config.loadFileConfig;
+const loadPipelineFileConfigWithDiagnostic = pipeline_config.loadFileConfigWithDiagnostic;
 
 const egl = @cImport({
     @cDefine("WL_EGL_PLATFORM", "1");
@@ -1161,6 +1162,18 @@ fn parseVisualStyle(style: []const u8) !VisualStyle {
     return error.InvalidVisualStyle;
 }
 
+fn logPipelineParseError(pipeline_path: []const u8, diagnostic: *const PipelineParseDiagnostic, err: anyerror) void {
+    if (diagnostic.message) |message| {
+        if (diagnostic.line > 0) {
+            std.log.err("{s}:{}: {s}", .{ pipeline_path, diagnostic.line, message });
+        } else {
+            std.log.err("{s}: {s}", .{ pipeline_path, message });
+        }
+    } else {
+        std.log.err("failed to parse pipeline file {s}: {}", .{ pipeline_path, err });
+    }
+}
+
 const NextFrameStrategy = union(enum) {
     Vsync: *wl.Callback,
     Custom: struct {
@@ -1380,31 +1393,17 @@ pub fn main() !u8 {
 
     var pipeline_file_config: ?PipelineFileConfig = null;
     defer if (pipeline_file_config) |*config| config.deinit(allocator);
+    var pipeline_parse_diagnostic: PipelineParseDiagnostic = .{};
+    defer pipeline_parse_diagnostic.deinit(allocator);
 
     const effective_shader_path = if (options.options.pipeline) |pipeline_path| blk: {
-        pipeline_file_config = loadPipelineFileConfig(allocator, pipeline_path) catch |err| switch (err) {
+        pipeline_file_config = loadPipelineFileConfigWithDiagnostic(allocator, pipeline_path, &pipeline_parse_diagnostic) catch |err| switch (err) {
             error.FileNotFound => {
                 std.log.err("pipeline file not found: {s}", .{pipeline_path});
                 return 1;
             },
-            error.MissingBaseShader => {
-                std.log.err("pipeline file must define [pipeline] base = \"...\"", .{});
-                return 1;
-            },
-            error.MissingPassEffect => {
-                std.log.err("postprocess pass must define an effect", .{});
-                return 1;
-            },
-            error.MissingEnvironmentVariable => {
-                std.log.err("pipeline file references an environment variable that is not set", .{});
-                return 1;
-            },
-            error.MissingPassPath => {
-                std.log.err("base pass must define a shader path", .{});
-                return 1;
-            },
-            error.InvalidPipelineSection, error.InvalidPipelineSyntax, error.InvalidPipelineKey, error.InvalidPipelineValue => {
-                std.log.err("failed to parse pipeline file {s}: {}", .{ pipeline_path, err });
+            error.MissingBaseShader, error.MissingPassEffect, error.MissingEnvironmentVariable, error.MissingPassPath, error.InvalidPipelineSection, error.InvalidPipelineSyntax, error.InvalidPipelineKey, error.InvalidPipelineValue => {
+                logPipelineParseError(pipeline_path, &pipeline_parse_diagnostic, err);
                 return 1;
             },
             else => |e| {
