@@ -71,11 +71,13 @@ Notes:
 - `capture` is `sink` or `source`.
 - `target = "auto"` means use automatic device selection.
 - `visual_style` is one of `blend`, `pulse`, `drift`, `strobe`, `heat`.
+- enum-style values such as `kind`, `effect`, `capture`, and `visual_style`
+  may be written as bare identifiers or quoted strings.
 - this version requires exactly one `kind = base` pass
 - this version allows up to four ordered `kind = postprocess` passes
 - built-in postprocess effects are `pulse_zoom`, `glow_grade`, `heat_shift`,
   `impact_flash`, and `shock_ring`
-- built-in postprocess passes currently support `strength`
+- built-in postprocess passes currently support non-negative finite `strength`
 
 Compatibility:
 

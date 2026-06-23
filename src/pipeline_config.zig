@@ -204,12 +204,12 @@ test "loadFileConfig parses pass pipeline audio and modulation sections" {
         .sub_path = "pipeline.toml",
         .data =
         \\[[passes]]
-        \\kind = base
+        \\kind = "base"
         \\path = "shader.glsl"
         \\
         \\[[passes]]
-        \\kind = postprocess
-        \\effect = pulse_zoom
+        \\kind = "postprocess"
+        \\effect = "pulse_zoom"
         \\strength = 1.25
         \\
         \\[[passes]]
@@ -219,7 +219,7 @@ test "loadFileConfig parses pass pipeline audio and modulation sections" {
         \\
         \\[audio]
         \\enabled = true
-        \\capture = source
+        \\capture = "source"
         \\target = "music-monitor"
         \\
         \\[modulation]
@@ -227,7 +227,7 @@ test "loadFileConfig parses pass pipeline audio and modulation sections" {
         \\time_strength = 1.75
         \\visual_reactive = true
         \\visual_strength = 0.80
-        \\visual_style = heat
+        \\visual_style = "heat"
         \\
         ,
     });
@@ -410,11 +410,56 @@ test "loadFileConfigWithDiagnostic reports section key and effect errors" {
         \\
         ,
     });
+    try tmp.dir.writeFile(.{
+        .sub_path = "negative-strength.toml",
+        .data =
+        \\[[passes]]
+        \\kind = base
+        \\path = "shader.glsl"
+        \\
+        \\[[passes]]
+        \\kind = postprocess
+        \\effect = pulse_zoom
+        \\strength = -0.1
+        \\
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "nan-strength.toml",
+        .data =
+        \\[[passes]]
+        \\kind = base
+        \\path = "shader.glsl"
+        \\
+        \\[[passes]]
+        \\kind = postprocess
+        \\effect = pulse_zoom
+        \\strength = nan
+        \\
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "inf-strength.toml",
+        .data =
+        \\[[passes]]
+        \\kind = base
+        \\path = "shader.glsl"
+        \\
+        \\[[passes]]
+        \\kind = postprocess
+        \\effect = pulse_zoom
+        \\strength = inf
+        \\
+        ,
+    });
 
     try expectLoadDiagnostic(allocator, &tmp, "bad-section.toml", error.InvalidPipelineSection, 1, "unknown section [bogus]");
     try expectLoadDiagnostic(allocator, &tmp, "bad-key.toml", error.InvalidPipelineKey, 2, "unknown key \"wat\" in [audio]");
     try expectLoadDiagnostic(allocator, &tmp, "bad-effect.toml", error.InvalidPipelineValue, 3, "unknown postprocess effect \"blurp\"; supported: pulse_zoom, glow_grade, heat_shift, impact_flash, shock_ring");
     try expectLoadDiagnostic(allocator, &tmp, "missing-env.toml", error.MissingEnvironmentVariable, 2, "pipeline path references an environment variable that is not set: ${PAPERTOY_TEST_MISSING_ENV_CE6B0CB1043B4DF3}");
+    try expectLoadDiagnostic(allocator, &tmp, "negative-strength.toml", error.InvalidPipelineValue, 8, "invalid pass strength: expected non-negative finite number");
+    try expectLoadDiagnostic(allocator, &tmp, "nan-strength.toml", error.InvalidPipelineValue, 8, "invalid pass strength: expected non-negative finite number");
+    try expectLoadDiagnostic(allocator, &tmp, "inf-strength.toml", error.InvalidPipelineValue, 8, "invalid pass strength: expected non-negative finite number");
 }
 
 test "loadFileConfigWithDiagnostic reports pass validation lines" {
@@ -779,8 +824,8 @@ const PipelineFileParser = struct {
                     };
                     self.current_pass_effect_line = self.line_number;
                 } else if (std.mem.eql(u8, key, "strength")) {
-                    self.current_pass_strength = parseFloat(value) catch |err| {
-                        try self.setDiagnostic(self.line_number, "invalid pass strength: expected number", .{});
+                    self.current_pass_strength = parsePassStrength(value) catch |err| {
+                        try self.setDiagnostic(self.line_number, "invalid pass strength: expected non-negative finite number", .{});
                         return err;
                     };
                 } else {
@@ -919,14 +964,14 @@ fn parseFloat(value: []const u8) !f32 {
 }
 
 fn parseCaptureMode(value: []const u8) !audio.CaptureMode {
-    const parsed = try parseUnquotedIdentifier(value);
+    const parsed = try parseIdentifierValue(value);
     if (std.mem.eql(u8, parsed, "sink")) return .sink;
     if (std.mem.eql(u8, parsed, "source")) return .source;
     return error.InvalidPipelineValue;
 }
 
 fn parseVisualStyle(value: []const u8) !shader.VisualStyle {
-    const parsed = try parseUnquotedIdentifier(value);
+    const parsed = try parseIdentifierValue(value);
     if (std.mem.eql(u8, parsed, "blend")) return .blend;
     if (std.mem.eql(u8, parsed, "pulse")) return .pulse;
     if (std.mem.eql(u8, parsed, "drift")) return .drift;
@@ -936,21 +981,32 @@ fn parseVisualStyle(value: []const u8) !shader.VisualStyle {
 }
 
 fn parsePassKind(value: []const u8) !PassKind {
-    const parsed = try parseUnquotedIdentifier(value);
+    const parsed = try parseIdentifierValue(value);
     if (std.mem.eql(u8, parsed, "base")) return .base;
     if (std.mem.eql(u8, parsed, "postprocess")) return .postprocess;
     return error.InvalidPipelineValue;
 }
 
 fn parsePostProcessEffect(value: []const u8) !PostProcessEffect {
-    const parsed = try parseUnquotedIdentifier(value);
+    const parsed = try parseIdentifierValue(value);
     return PostProcessEffect.parseConfigName(parsed) orelse error.InvalidPipelineValue;
 }
 
-fn parseUnquotedIdentifier(value: []const u8) ![]const u8 {
+fn parseIdentifierValue(value: []const u8) ![]const u8 {
     if (value.len == 0) return error.InvalidPipelineValue;
-    if (value[0] == '"') return error.InvalidPipelineValue;
+    if (value[0] == '"') {
+        if (value.len < 2 or value[value.len - 1] != '"') return error.InvalidPipelineValue;
+        const inner = value[1 .. value.len - 1];
+        if (std.mem.indexOfScalar(u8, inner, '\\') != null) return error.InvalidPipelineValue;
+        return inner;
+    }
     return value;
+}
+
+fn parsePassStrength(value: []const u8) !f32 {
+    const strength = try parseFloat(value);
+    if (!std.math.isFinite(strength) or strength < 0.0) return error.InvalidPipelineValue;
+    return strength;
 }
 
 fn expandEnvironmentReference(allocator: Allocator, value: []const u8) ![]u8 {
