@@ -12,6 +12,14 @@ pub const PassKind = enum {
 
 pub const PostProcessEffect = effects.PostProcessEffect;
 
+pub const max_postprocess_passes = 4;
+pub const max_passes = max_postprocess_passes + 1;
+
+pub const PostProcessConfig = struct {
+    effect: PostProcessEffect = .pulse_zoom,
+    strength: f32 = 1.0,
+};
+
 pub const PassConfig = struct {
     kind: PassKind = .base,
     source: ?[]const u8 = null,
@@ -25,7 +33,7 @@ pub const PipelineConfig = struct {
     resolution: shader.Resolution,
     frame_rate: u32,
     pass_count: usize,
-    passes: [2]PassConfig,
+    passes: [max_passes]PassConfig,
 
     pub fn activePasses(self: *const PipelineConfig) ![]const PassConfig {
         if (self.pass_count == 0 or self.pass_count > self.passes.len) return error.InvalidPipelineValue;
@@ -39,19 +47,52 @@ pub const PipelineConfig = struct {
         time_modulation: shader.TimeModulation,
         visual_modulation: shader.VisualModulation,
     ) PipelineConfig {
+        var passes = [_]PassConfig{.{}} ** max_passes;
+        passes[0] = .{
+            .kind = .base,
+            .source = source,
+            .time_modulation = time_modulation,
+            .visual_modulation = visual_modulation,
+        };
+
         return .{
             .resolution = resolution,
             .frame_rate = frame_rate,
             .pass_count = 1,
-            .passes = .{
-                .{
-                    .kind = .base,
-                    .source = source,
-                    .time_modulation = time_modulation,
-                    .visual_modulation = visual_modulation,
-                },
-                .{},
-            },
+            .passes = passes,
+        };
+    }
+
+    pub fn withPostprocessPasses(
+        source: []const u8,
+        resolution: shader.Resolution,
+        frame_rate: u32,
+        time_modulation: shader.TimeModulation,
+        visual_modulation: shader.VisualModulation,
+        postprocess_passes: []const PostProcessConfig,
+    ) !PipelineConfig {
+        if (postprocess_passes.len > max_postprocess_passes) return error.InvalidPipelineValue;
+
+        var passes = [_]PassConfig{.{}} ** max_passes;
+        passes[0] = .{
+            .kind = .base,
+            .source = source,
+            .time_modulation = time_modulation,
+            .visual_modulation = visual_modulation,
+        };
+        for (postprocess_passes, 0..) |post_config, i| {
+            passes[i + 1] = .{
+                .kind = .postprocess,
+                .effect = post_config.effect,
+                .strength = post_config.strength,
+            };
+        }
+
+        return .{
+            .resolution = resolution,
+            .frame_rate = frame_rate,
+            .pass_count = 1 + postprocess_passes.len,
+            .passes = passes,
         };
     }
 
@@ -65,24 +106,14 @@ pub const PipelineConfig = struct {
         post_strength: f32,
     ) PipelineConfig {
         if (post_effect) |effect| {
-            return .{
-                .resolution = resolution,
-                .frame_rate = frame_rate,
-                .pass_count = 2,
-                .passes = .{
-                    .{
-                        .kind = .base,
-                        .source = source,
-                        .time_modulation = time_modulation,
-                        .visual_modulation = visual_modulation,
-                    },
-                    .{
-                        .kind = .postprocess,
-                        .effect = effect,
-                        .strength = post_strength,
-                    },
-                },
-            };
+            return withPostprocessPasses(
+                source,
+                resolution,
+                frame_rate,
+                time_modulation,
+                visual_modulation,
+                &.{.{ .effect = effect, .strength = post_strength }},
+            ) catch unreachable;
         }
 
         return legacy(source, resolution, frame_rate, time_modulation, visual_modulation);
@@ -107,6 +138,26 @@ test "PipelineConfig stores generated passes inline" {
     try std.testing.expectEqual(@as(f32, 0.75), post_config.passes[1].strength);
 }
 
+test "PipelineConfig stores multiple postprocess passes inline" {
+    const source = "void mainImage(out vec4 fragColor, in vec2 fragCoord) { fragColor = vec4(fragCoord, 0.0, 1.0); }";
+    const resolution: shader.Resolution = .{ .width = 64, .height = 32 };
+
+    const postprocess_passes = [_]PostProcessConfig{
+        .{ .effect = .pulse_zoom, .strength = 0.5 },
+        .{ .effect = .pulse_zoom, .strength = 1.25 },
+    };
+    const config = try PipelineConfig.withPostprocessPasses(source, resolution, 60, .{}, .{}, &postprocess_passes);
+
+    try std.testing.expectEqual(@as(usize, 3), config.pass_count);
+    try std.testing.expectEqual(.base, config.passes[0].kind);
+    try std.testing.expectEqual(.postprocess, config.passes[1].kind);
+    try std.testing.expectEqual(PostProcessEffect.pulse_zoom, config.passes[1].effect.?);
+    try std.testing.expectEqual(@as(f32, 0.5), config.passes[1].strength);
+    try std.testing.expectEqual(.postprocess, config.passes[2].kind);
+    try std.testing.expectEqual(PostProcessEffect.pulse_zoom, config.passes[2].effect.?);
+    try std.testing.expectEqual(@as(f32, 1.25), config.passes[2].strength);
+}
+
 test "PipelineConfig rejects invalid pass counts" {
     const source = "void mainImage(out vec4 fragColor, in vec2 fragCoord) { fragColor = vec4(fragCoord, 0.0, 1.0); }";
     const resolution: shader.Resolution = .{ .width = 64, .height = 32 };
@@ -121,13 +172,17 @@ test "PipelineConfig rejects invalid pass counts" {
 
 pub const FileConfig = struct {
     base_path: []u8,
-    post_effect: ?PostProcessEffect = null,
-    post_strength: f32 = 1.0,
+    post_count: usize = 0,
+    postprocess_passes: [max_postprocess_passes]PostProcessConfig = [_]PostProcessConfig{.{}} ** max_postprocess_passes,
     audio_enabled: bool = false,
     audio_target: ?[]u8 = null,
     audio_capture_mode: audio.CaptureMode = .sink,
     time_modulation: shader.TimeModulation = .{},
     visual_modulation: shader.VisualModulation = .{},
+
+    pub fn activePostprocessPasses(self: *const FileConfig) []const PostProcessConfig {
+        return self.postprocess_passes[0..self.post_count];
+    }
 
     pub fn deinit(self: *FileConfig, allocator: Allocator) void {
         allocator.free(self.base_path);
@@ -157,6 +212,11 @@ test "loadFileConfig parses pass pipeline audio and modulation sections" {
         \\effect = pulse_zoom
         \\strength = 1.25
         \\
+        \\[[passes]]
+        \\kind = postprocess
+        \\effect = pulse_zoom
+        \\strength = 0.75
+        \\
         \\[audio]
         \\enabled = true
         \\capture = source
@@ -182,8 +242,12 @@ test "loadFileConfig parses pass pipeline audio and modulation sections" {
     defer allocator.free(expected_base_path);
 
     try std.testing.expectEqualStrings(expected_base_path, config.base_path);
-    try std.testing.expectEqual(PostProcessEffect.pulse_zoom, config.post_effect.?);
-    try std.testing.expectEqual(@as(f32, 1.25), config.post_strength);
+    const postprocess_passes = config.activePostprocessPasses();
+    try std.testing.expectEqual(@as(usize, 2), postprocess_passes.len);
+    try std.testing.expectEqual(PostProcessEffect.pulse_zoom, postprocess_passes[0].effect);
+    try std.testing.expectEqual(@as(f32, 1.25), postprocess_passes[0].strength);
+    try std.testing.expectEqual(PostProcessEffect.pulse_zoom, postprocess_passes[1].effect);
+    try std.testing.expectEqual(@as(f32, 0.75), postprocess_passes[1].strength);
     try std.testing.expect(config.audio_enabled);
     try std.testing.expectEqual(audio.CaptureMode.source, config.audio_capture_mode);
     try std.testing.expectEqualStrings("music-monitor", config.audio_target.?);
@@ -374,10 +438,40 @@ test "loadFileConfigWithDiagnostic reports pass validation lines" {
         \\
         ,
     });
+    try tmp.dir.writeFile(.{
+        .sub_path = "too-many-postprocess.toml",
+        .data =
+        \\[[passes]]
+        \\kind = base
+        \\path = "shader.glsl"
+        \\
+        \\[[passes]]
+        \\kind = postprocess
+        \\effect = pulse_zoom
+        \\
+        \\[[passes]]
+        \\kind = postprocess
+        \\effect = pulse_zoom
+        \\
+        \\[[passes]]
+        \\kind = postprocess
+        \\effect = pulse_zoom
+        \\
+        \\[[passes]]
+        \\kind = postprocess
+        \\effect = pulse_zoom
+        \\
+        \\[[passes]]
+        \\kind = postprocess
+        \\effect = pulse_zoom
+        \\
+        ,
+    });
 
     try expectLoadDiagnostic(allocator, &tmp, "missing-base-path.toml", error.MissingPassPath, 1, "base pass must define path");
     try expectLoadDiagnostic(allocator, &tmp, "duplicate-base.toml", error.InvalidPipelineSyntax, 5, "pipeline can only define one base shader");
     try expectLoadDiagnostic(allocator, &tmp, "postprocess-path.toml", error.InvalidPipelineSyntax, 7, "postprocess pass cannot define path");
+    try expectLoadDiagnostic(allocator, &tmp, "too-many-postprocess.toml", error.InvalidPipelineSyntax, 21, "pipeline supports at most 4 postprocess passes");
 }
 
 pub const ParseError = error{
@@ -755,12 +849,15 @@ const PipelineFileParser = struct {
             try self.setDiagnostic(self.current_pass_line, "postprocess pass must define effect", .{});
             return error.MissingPassEffect;
         };
-        if (self.result.post_effect != null) {
-            try self.setDiagnostic(self.current_pass_line, "pipeline can only define one postprocess pass", .{});
+        if (self.result.post_count >= max_postprocess_passes) {
+            try self.setDiagnostic(self.current_pass_line, "pipeline supports at most {} postprocess passes", .{max_postprocess_passes});
             return error.InvalidPipelineSyntax;
         }
-        self.result.post_effect = effect;
-        self.result.post_strength = self.current_pass_strength;
+        self.result.postprocess_passes[self.result.post_count] = .{
+            .effect = effect,
+            .strength = self.current_pass_strength,
+        };
+        self.result.post_count += 1;
     }
 };
 

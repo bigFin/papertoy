@@ -3,21 +3,21 @@ const Allocator = std.mem.Allocator;
 
 const audio = @import("audio.zig");
 const AudioSnapshot = audio.Snapshot;
-const effects = @import("effects.zig");
 const gl = @import("zgl");
 const pipeline_config = @import("pipeline_config.zig");
 const postprocess = @import("postprocess.zig");
 const shader = @import("shader.zig");
 
 pub const PipelineConfig = pipeline_config.PipelineConfig;
-pub const PostProcessEffect = effects.PostProcessEffect;
 
 pub const PipelineRunner = struct {
     base_pass: *shader.Shader,
-    post_pass: ?postprocess.PostProcessPass = null,
-    offscreen_target: ?postprocess.RenderTarget = null,
+    post_passes: ?[]postprocess.PostProcessPass = null,
+    post_pass_count: usize = 0,
+    render_targets: ?[]postprocess.RenderTarget = null,
+    render_target_count: usize = 0,
 
-    pub fn createLegacy(allocator: Allocator, config: PipelineConfig) !PipelineRunner {
+    pub fn create(allocator: Allocator, config: PipelineConfig) !PipelineRunner {
         const passes = try config.activePasses();
 
         const base_config = passes[0];
@@ -32,52 +32,98 @@ pub const PipelineRunner = struct {
                 base_config.visual_modulation,
             ),
         };
-        errdefer self.base_pass.destroy(allocator);
+        errdefer self.destroy(allocator);
 
-        if (passes.len > 1) {
-            const post_config = passes[1];
+        const post_count = passes.len - 1;
+        if (post_count == 0) return self;
+
+        const target_count: usize = if (post_count > 1) 2 else 1;
+        self.render_targets = try allocator.alloc(postprocess.RenderTarget, target_count);
+        for (self.render_targets.?[0..target_count]) |*target| {
+            target.* = try postprocess.RenderTarget.init(config.resolution);
+            self.render_target_count += 1;
+        }
+
+        self.post_passes = try allocator.alloc(postprocess.PostProcessPass, post_count);
+        for (passes[1..], 0..) |post_config, i| {
             if (post_config.kind != .postprocess or post_config.effect == null) return error.InvalidPipelineValue;
 
-            self.offscreen_target = try postprocess.RenderTarget.init(config.resolution);
-            errdefer if (self.offscreen_target) |*target| target.deinit();
-
-            self.post_pass = try postprocess.PostProcessPass.init(allocator, config.resolution, post_config.effect.?);
-            errdefer if (self.post_pass) |*pass| pass.deinit(allocator);
-            self.post_pass.?.strength = post_config.strength;
+            self.post_passes.?[i] = try postprocess.PostProcessPass.init(allocator, config.resolution, post_config.effect.?);
+            self.post_pass_count += 1;
+            self.post_passes.?[i].strength = post_config.strength;
         }
 
         return self;
     }
 
     pub fn destroy(self: *PipelineRunner, allocator: Allocator) void {
-        if (self.post_pass) |*pass| pass.deinit(allocator);
-        if (self.offscreen_target) |*target| target.deinit();
+        if (self.post_passes) |passes| {
+            for (passes[0..self.post_pass_count]) |*pass| pass.deinit(allocator);
+            allocator.free(passes);
+            self.post_passes = null;
+            self.post_pass_count = 0;
+        }
+        if (self.render_targets) |targets| {
+            for (targets[0..self.render_target_count]) |*target| target.deinit();
+            allocator.free(targets);
+            self.render_targets = null;
+            self.render_target_count = 0;
+        }
         self.base_pass.destroy(allocator);
     }
 
     pub fn resize(self: *PipelineRunner, resolution: shader.Resolution) !void {
         self.base_pass.resolution = resolution;
-        if (self.offscreen_target) |*target| try target.resize(resolution);
-        if (self.post_pass) |*pass| pass.resolution = resolution;
+        if (self.render_targets) |targets| {
+            for (targets[0..self.render_target_count]) |*target| try target.resize(resolution);
+        }
+        if (self.post_passes) |passes| {
+            for (passes[0..self.post_pass_count]) |*pass| pass.resolution = resolution;
+        }
     }
 
     pub fn render(self: *PipelineRunner, snapshot: AudioSnapshot) !void {
-        if (self.offscreen_target) |*target| {
-            target.bind();
-            gl.viewport(0, 0, target.resolution.width, target.resolution.height);
-            gl.clearColor(0, 0, 0, 1);
-            gl.clear(.{ .color = true });
+        if (self.post_pass_count == 0) {
             try self.base_pass.render(snapshot);
+            return;
+        }
 
-            gl.bindFramebuffer(.invalid, .buffer);
-            gl.viewport(0, 0, target.resolution.width, target.resolution.height);
-            try self.post_pass.?.render(target.texture, snapshot);
-        } else {
-            try self.base_pass.render(snapshot);
+        const post_passes = self.post_passes.?[0..self.post_pass_count];
+        const targets = self.render_targets.?[0..self.render_target_count];
+
+        bindRenderTarget(&targets[0]);
+        try self.base_pass.render(snapshot);
+
+        var input_index: usize = 0;
+        for (post_passes, 0..) |*pass, i| {
+            const is_final_pass = i + 1 == post_passes.len;
+            if (is_final_pass) {
+                bindDefaultFramebuffer(targets[input_index].resolution);
+            } else {
+                const output_index: usize = if (input_index == 0) 1 else 0;
+                bindRenderTarget(&targets[output_index]);
+                try pass.render(targets[input_index].texture, snapshot);
+                input_index = output_index;
+                continue;
+            }
+
+            try pass.render(targets[input_index].texture, snapshot);
         }
     }
 
     pub fn frame(self: *const PipelineRunner) u32 {
         return self.base_pass.frame;
+    }
+
+    fn bindRenderTarget(target: *postprocess.RenderTarget) void {
+        target.bind();
+        gl.viewport(0, 0, target.resolution.width, target.resolution.height);
+        gl.clearColor(0, 0, 0, 1);
+        gl.clear(.{ .color = true });
+    }
+
+    fn bindDefaultFramebuffer(resolution: shader.Resolution) void {
+        gl.bindFramebuffer(.invalid, .buffer);
+        gl.viewport(0, 0, resolution.width, resolution.height);
     }
 };

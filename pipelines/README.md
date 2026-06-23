@@ -6,11 +6,10 @@ Paper Toy now supports a minimal pipeline file format through:
 papertoy --pipeline <file>
 ```
 
-This first version intentionally models the current "unified" behavior rather
-than the final multi-pass design. A pipeline file currently defines:
+A pipeline file currently defines a bounded linear render pipeline:
 
 - one base shader
-- zero or one built-in post-process pass
+- zero to four ordered built-in post-process passes
 - audio capture settings
 - unified time and visual modulation settings
 
@@ -38,6 +37,11 @@ kind = postprocess
 effect = pulse_zoom
 strength = 1.35
 
+[[passes]]
+kind = postprocess
+effect = pulse_zoom
+strength = 0.65
+
 [audio]
 enabled = true
 capture = sink
@@ -58,7 +62,7 @@ Notes:
 - `target = "auto"` means use automatic device selection.
 - `visual_style` is one of `blend`, `pulse`, `drift`, `strobe`, `heat`.
 - this version requires exactly one `kind = base` pass
-- this version optionally allows one `kind = postprocess` pass
+- this version allows up to four ordered `kind = postprocess` passes
 - the first built-in postprocess effect is `pulse_zoom`
 - built-in postprocess passes currently support `strength`
 
@@ -93,8 +97,9 @@ The remaining top-level runtime controls still come from the CLI:
 - [desktop-audio-post.example.toml](desktop-audio-post.example.toml)
 - [desktop-static.example.toml](desktop-static.example.toml)
 
-## Next Step
+## Current Limits
 
-The next evolution of this format is explicit pass lists. The current unified
-schema is intentionally small so it can be the stable bridge from the existing
-single-shader launcher to a real composable pipeline runner.
+Postprocess chaining is linear: each postprocess pass samples the previous pass
+output, and the final postprocess pass renders to the wallpaper surface. Named
+intermediate textures, feedback passes, and arbitrary graph execution are not
+part of this schema yet.

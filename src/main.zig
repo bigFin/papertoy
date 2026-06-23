@@ -12,7 +12,6 @@ const zig_args = @import("zig-args");
 
 const AudioAnalyzer = @import("audio.zig").AudioAnalyzer;
 const CaptureMode = @import("audio.zig").CaptureMode;
-const effects = @import("effects.zig");
 const GlobalAttributes = @import("shader.zig").GlobalAttributes;
 const TimeModulation = @import("shader.zig").TimeModulation;
 const VisualModulation = @import("shader.zig").VisualModulation;
@@ -22,7 +21,7 @@ const pipeline_config = @import("pipeline_config.zig");
 const PipelineConfig = pipeline_config.PipelineConfig;
 const PipelineFileConfig = pipeline_config.FileConfig;
 const PipelineParseDiagnostic = pipeline_config.ParseDiagnostic;
-const PostProcessEffect = effects.PostProcessEffect;
+const PostProcessConfig = pipeline_config.PostProcessConfig;
 const loadPipelineFileConfigWithDiagnostic = pipeline_config.loadFileConfigWithDiagnostic;
 
 const egl = @cImport({
@@ -1209,8 +1208,7 @@ const Paper = struct {
         target_frame_rate: ?u32,
         time_modulation: TimeModulation,
         visual_modulation: VisualModulation,
-        post_effect: ?PostProcessEffect,
-        post_strength: f32,
+        postprocess_passes: []const PostProcessConfig,
     ) !*Paper {
         const self = try allocator.create(Paper);
         errdefer allocator.destroy(self);
@@ -1228,14 +1226,13 @@ const Paper = struct {
         errdefer self.global_attributes.deinit();
         self.global_attributes.bind();
 
-        self.pipeline = try PipelineRunner.createLegacy(allocator, PipelineConfig.unified(
+        self.pipeline = try PipelineRunner.create(allocator, try PipelineConfig.withPostprocessPasses(
             shader_source,
             .{ .width = self.surface.width, .height = self.surface.height },
             target_frame_rate orelse output.refresh_rate,
             time_modulation,
             visual_modulation,
-            post_effect,
-            post_strength,
+            postprocess_passes,
         ));
         errdefer self.pipeline.destroy(allocator);
 
@@ -1484,6 +1481,11 @@ pub fn main() !u8 {
         return 1;
     }
 
+    const effective_postprocess_passes: []const PostProcessConfig = if (pipeline_file_config) |*config|
+        config.activePostprocessPasses()
+    else
+        &.{};
+
     if (global_output_configs.items.len == 0) {
         // No specific outputs requested, use all available outputs with the
         // global defaults from legacy options, if any.
@@ -1561,8 +1563,7 @@ pub fn main() !u8 {
             output_config.frame_rate,
             effective_time_modulation,
             effective_visual_modulation,
-            if (pipeline_file_config) |config| config.post_effect else null,
-            if (pipeline_file_config) |config| config.post_strength else 1.0,
+            effective_postprocess_passes,
         );
         try papers.append(allocator, paper);
         if (output_config.frame_rate) |fps| {
