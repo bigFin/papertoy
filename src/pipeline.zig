@@ -32,6 +32,11 @@ pub const PipelineConfig = struct {
     pass_count: usize,
     passes: [2]PassConfig,
 
+    pub fn activePasses(self: *const PipelineConfig) ![]const PassConfig {
+        if (self.pass_count == 0 or self.pass_count > self.passes.len) return error.InvalidPipelineValue;
+        return self.passes[0..self.pass_count];
+    }
+
     pub fn legacy(
         source: []const u8,
         resolution: shader.Resolution,
@@ -105,6 +110,18 @@ test "PipelineConfig stores generated passes inline" {
     try std.testing.expectEqual(.postprocess, post_config.passes[1].kind);
     try std.testing.expectEqual(PostProcessEffect.pulse_zoom, post_config.passes[1].effect.?);
     try std.testing.expectEqual(@as(f32, 0.75), post_config.passes[1].strength);
+}
+
+test "PipelineConfig rejects invalid pass counts" {
+    const source = "void mainImage(out vec4 fragColor, in vec2 fragCoord) { fragColor = vec4(fragCoord, 0.0, 1.0); }";
+    const resolution: shader.Resolution = .{ .width = 64, .height = 32 };
+
+    var config = PipelineConfig.legacy(source, resolution, 60, .{}, .{});
+    config.pass_count = 0;
+    try std.testing.expectError(error.InvalidPipelineValue, config.activePasses());
+
+    config.pass_count = config.passes.len + 1;
+    try std.testing.expectError(error.InvalidPipelineValue, config.activePasses());
 }
 
 pub const FileConfig = struct {
@@ -306,11 +323,23 @@ fn finalizePass(
 
 fn resolvePipelinePath(allocator: Allocator, pipeline_path: []const u8, target: []const u8) ![]u8 {
     const expanded_target = try expandEnvironmentReference(allocator, target);
-    defer if (!std.mem.eql(u8, expanded_target, target)) allocator.free(expanded_target);
+    defer allocator.free(expanded_target);
 
     if (std.fs.path.isAbsolute(expanded_target)) return allocator.dupe(u8, expanded_target);
     const base_dir = std.fs.path.dirname(pipeline_path) orelse ".";
     return std.fs.path.resolve(allocator, &.{ base_dir, expanded_target });
+}
+
+test "resolvePipelinePath resolves literal paths without leaking expanded target" {
+    const allocator = std.testing.allocator;
+
+    const relative = try resolvePipelinePath(allocator, "/tmp/papertoy/pipeline.toml", "shader.glsl");
+    defer allocator.free(relative);
+    try std.testing.expectEqualStrings("/tmp/papertoy/shader.glsl", relative);
+
+    const absolute = try resolvePipelinePath(allocator, "/tmp/papertoy/pipeline.toml", "/opt/shaders/base.glsl");
+    defer allocator.free(absolute);
+    try std.testing.expectEqualStrings("/opt/shaders/base.glsl", absolute);
 }
 
 fn parseString(allocator: Allocator, value: []const u8) ![]u8 {
@@ -379,10 +408,10 @@ pub const PipelineRunner = struct {
     offscreen_target: ?RenderTarget = null,
 
     pub fn createLegacy(allocator: Allocator, config: PipelineConfig) !PipelineRunner {
-        const passes = config.passes[0..config.pass_count];
-        if (passes.len == 0) return error.InvalidPipelineValue;
+        const passes = try config.activePasses();
 
         const base_config = passes[0];
+        if (base_config.kind != .base) return error.InvalidPipelineValue;
         var self = PipelineRunner{
             .base_pass = try shader.Shader.create(
                 allocator,
@@ -480,8 +509,9 @@ const RenderTarget = struct {
     }
 
     pub fn resize(self: *RenderTarget, resolution: shader.Resolution) !void {
+        const new_target = try init(resolution);
         self.deinit();
-        self.* = try init(resolution);
+        self.* = new_target;
     }
 };
 
