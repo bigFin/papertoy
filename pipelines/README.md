@@ -83,6 +83,8 @@ Compatibility:
 
 ## Built-In Effects
 
+Run `papertoy --list-effects` to print the built-in effect list from the CLI.
+
 | Effect | Feel | Main audio drivers | Good use |
 | --- | --- | --- | --- |
 | `pulse_zoom` | zoom, contrast, subtle swirl | impact, energy, brightness | first pass after the base shader |

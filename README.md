@@ -60,6 +60,7 @@ $ zig-out/bin/papertoy /path/to/shader.glsl
 
 - `--frame-rate <fps>`: Set the default frame rate for selected outputs. Per-output `frame-rate` values override this.
 - `--resolution <WxH>`: Set the default positive logical resolution for selected outputs. Per-output `resolution` values override this.
+- `--list-effects`: Print the built-in postprocess effects available to pipeline files and exit.
 
 If an output is removed while Papertoy is running, rendering stops for that
 output. Newly connected outputs are discovered by the Wayland registry, but

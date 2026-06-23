@@ -403,7 +403,6 @@ Implemented in this branch:
 
 Recommended next work:
 
-- add `--list-effects` or equivalent effect discovery
 - add one or two named preset files for different moods, including an explicit
   `shock_ring` preset
 - consider simple per-effect parameter metadata before adding many more effects

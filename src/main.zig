@@ -12,6 +12,7 @@ const zig_args = @import("zig-args");
 
 const AudioAnalyzer = @import("audio.zig").AudioAnalyzer;
 const CaptureMode = @import("audio.zig").CaptureMode;
+const effects = @import("effects.zig");
 const GlobalAttributes = @import("shader.zig").GlobalAttributes;
 const TimeModulation = @import("shader.zig").TimeModulation;
 const VisualModulation = @import("shader.zig").VisualModulation;
@@ -909,6 +910,7 @@ const Options = struct {
     @"audio-visual-strength": ?f32 = null,
     @"audio-visual-style": ?[]const u8 = null,
     @"audio-debug": bool = false,
+    @"list-effects": bool = false,
     help: bool = false,
 };
 
@@ -1096,9 +1098,35 @@ pub fn printUsage() !void {
         \\  --audio-visual-strength <f> Set the strength of generic visual modulation (default: 1.0)
         \\  --audio-visual-style <s> Visual style: blend (default), pulse, drift, strobe, heat
         \\  --audio-debug      Print live audio analyzer values to the terminal
+        \\  --list-effects     List built-in postprocess effects and exit
         \\  --help             Show this help message
         \\
     );
+}
+
+pub fn printEffects() !void {
+    var writer_buf: [256]u8 = undefined;
+    var stdout = std.fs.File.stdout().writer(&writer_buf);
+    defer stdout.interface.flush() catch unreachable;
+
+    try stdout.interface.writeAll(
+        \\Built-in postprocess effects:
+        \\
+    );
+    for (effects.postProcessEffectInfos()) |info| {
+        try stdout.interface.print(
+            \\  {s}
+            \\    {s}
+            \\    drivers: {s}
+            \\    use: {s}
+            \\
+        , .{
+            info.effect.configName(),
+            info.summary,
+            info.drivers,
+            info.good_use,
+        });
+    }
 }
 
 fn handleArgsError(err: zig_args.Error) !void {
@@ -1319,6 +1347,10 @@ pub fn main() !u8 {
 
     if (options.options.help) {
         try printUsage();
+        return 0;
+    }
+    if (options.options.@"list-effects") {
+        try printEffects();
         return 0;
     }
 
