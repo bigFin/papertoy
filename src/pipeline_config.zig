@@ -452,6 +452,28 @@ test "loadFileConfigWithDiagnostic reports section key and effect errors" {
         \\
         ,
     });
+    try tmp.dir.writeFile(.{
+        .sub_path = "nan-time-strength.toml",
+        .data =
+        \\[pipeline]
+        \\base = "shader.glsl"
+        \\
+        \\[modulation]
+        \\time_strength = nan
+        \\
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "negative-visual-strength.toml",
+        .data =
+        \\[pipeline]
+        \\base = "shader.glsl"
+        \\
+        \\[modulation]
+        \\visual_strength = -1.0
+        \\
+        ,
+    });
 
     try expectLoadDiagnostic(allocator, &tmp, "bad-section.toml", error.InvalidPipelineSection, 1, "unknown section [bogus]");
     try expectLoadDiagnostic(allocator, &tmp, "bad-key.toml", error.InvalidPipelineKey, 2, "unknown key \"wat\" in [audio]");
@@ -460,6 +482,8 @@ test "loadFileConfigWithDiagnostic reports section key and effect errors" {
     try expectLoadDiagnostic(allocator, &tmp, "negative-strength.toml", error.InvalidPipelineValue, 8, "invalid pass strength: expected non-negative finite number");
     try expectLoadDiagnostic(allocator, &tmp, "nan-strength.toml", error.InvalidPipelineValue, 8, "invalid pass strength: expected non-negative finite number");
     try expectLoadDiagnostic(allocator, &tmp, "inf-strength.toml", error.InvalidPipelineValue, 8, "invalid pass strength: expected non-negative finite number");
+    try expectLoadDiagnostic(allocator, &tmp, "nan-time-strength.toml", error.InvalidPipelineValue, 5, "invalid value for [modulation].time_strength: expected non-negative finite number");
+    try expectLoadDiagnostic(allocator, &tmp, "negative-visual-strength.toml", error.InvalidPipelineValue, 5, "invalid value for [modulation].visual_strength: expected non-negative finite number");
 }
 
 test "loadFileConfigWithDiagnostic reports pass validation lines" {
@@ -780,8 +804,8 @@ const PipelineFileParser = struct {
                         return err;
                     };
                 } else if (std.mem.eql(u8, key, "time_strength")) {
-                    self.result.time_modulation.strength = parseFloat(value) catch |err| {
-                        try self.setDiagnostic(self.line_number, "invalid value for [modulation].time_strength: expected number", .{});
+                    self.result.time_modulation.strength = parseNonNegativeFiniteFloat(value) catch |err| {
+                        try self.setDiagnostic(self.line_number, "invalid value for [modulation].time_strength: expected non-negative finite number", .{});
                         return err;
                     };
                 } else if (std.mem.eql(u8, key, "visual_reactive")) {
@@ -790,8 +814,8 @@ const PipelineFileParser = struct {
                         return err;
                     };
                 } else if (std.mem.eql(u8, key, "visual_strength")) {
-                    self.result.visual_modulation.strength = parseFloat(value) catch |err| {
-                        try self.setDiagnostic(self.line_number, "invalid value for [modulation].visual_strength: expected number", .{});
+                    self.result.visual_modulation.strength = parseNonNegativeFiniteFloat(value) catch |err| {
+                        try self.setDiagnostic(self.line_number, "invalid value for [modulation].visual_strength: expected non-negative finite number", .{});
                         return err;
                     };
                 } else if (std.mem.eql(u8, key, "visual_style")) {
@@ -1004,9 +1028,13 @@ fn parseIdentifierValue(value: []const u8) ![]const u8 {
 }
 
 fn parsePassStrength(value: []const u8) !f32 {
-    const strength = try parseFloat(value);
-    if (!std.math.isFinite(strength) or strength < 0.0) return error.InvalidPipelineValue;
-    return strength;
+    return parseNonNegativeFiniteFloat(value);
+}
+
+fn parseNonNegativeFiniteFloat(value: []const u8) !f32 {
+    const parsed = try parseFloat(value);
+    if (!std.math.isFinite(parsed) or parsed < 0.0) return error.InvalidPipelineValue;
+    return parsed;
 }
 
 fn expandEnvironmentReference(allocator: Allocator, value: []const u8) ![]u8 {

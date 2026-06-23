@@ -1507,13 +1507,13 @@ pub fn main() !u8 {
     });
     defer audio_analyzer.deinit();
 
-    if (effective_time_modulation.strength < 0) {
-        std.log.err("audio time strength must be non-negative, got {d}", .{effective_time_modulation.strength});
+    if (!isNonNegativeFinite(effective_time_modulation.strength)) {
+        std.log.err("audio time strength must be a non-negative finite number, got {d}", .{effective_time_modulation.strength});
         return 1;
     }
 
-    if (effective_visual_modulation.strength < 0) {
-        std.log.err("audio visual strength must be non-negative, got {d}", .{effective_visual_modulation.strength});
+    if (!isNonNegativeFinite(effective_visual_modulation.strength)) {
+        std.log.err("audio visual strength must be a non-negative finite number, got {d}", .{effective_visual_modulation.strength});
         return 1;
     }
 
@@ -1724,6 +1724,18 @@ fn setRenderFrame(callback: *wl.Callback, event: wl.Callback.Event, render_frame
             render_frame.* = true;
         },
     }
+}
+
+fn isNonNegativeFinite(value: f32) bool {
+    return std.math.isFinite(value) and value >= 0.0;
+}
+
+test "isNonNegativeFinite rejects negative and non-finite values" {
+    try std.testing.expect(isNonNegativeFinite(0.0));
+    try std.testing.expect(isNonNegativeFinite(1.5));
+    try std.testing.expect(!isNonNegativeFinite(-0.1));
+    try std.testing.expect(!isNonNegativeFinite(std.math.nan(f32)));
+    try std.testing.expect(!isNonNegativeFinite(std.math.inf(f32)));
 }
 
 fn logAudioDebug(audio_analyzer: *const AudioAnalyzer, snapshot: @import("audio.zig").Snapshot) void {
