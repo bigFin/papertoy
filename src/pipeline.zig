@@ -3,13 +3,14 @@ const Allocator = std.mem.Allocator;
 
 const audio = @import("audio.zig");
 const AudioSnapshot = audio.Snapshot;
+const effects = @import("effects.zig");
 const gl = @import("zgl");
 const pipeline_config = @import("pipeline_config.zig");
 const postprocess = @import("postprocess.zig");
 const shader = @import("shader.zig");
 
 pub const PipelineConfig = pipeline_config.PipelineConfig;
-pub const PostProcessEffect = pipeline_config.PostProcessEffect;
+pub const PostProcessEffect = effects.PostProcessEffect;
 
 pub const PipelineRunner = struct {
     base_pass: *shader.Shader,

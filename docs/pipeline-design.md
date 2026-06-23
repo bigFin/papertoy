@@ -245,6 +245,7 @@ This avoids maintaining two rendering architectures long-term.
 - `PipelineConfig`
 - `AudioConfig`
 - `PassConfig`
+- `effects.PostProcessEffect`
 - `PipelineRunner`
 - `postprocess.RenderTarget`
 - `postprocess.PostProcessPass`
@@ -256,6 +257,12 @@ This avoids maintaining two rendering architectures long-term.
 - parsed TOML representation
 - validation
 - migration/defaulting
+
+`effects.PostProcessEffect`
+
+- built-in effect identifiers
+- config names such as `pulse_zoom`
+- shader integer values for postprocess dispatch
 
 `PipelineRunner`
 

@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const audio = @import("audio.zig");
+const effects = @import("effects.zig");
 const shader = @import("shader.zig");
 
 pub const PassKind = enum {
@@ -9,9 +10,7 @@ pub const PassKind = enum {
     postprocess,
 };
 
-pub const PostProcessEffect = enum(i32) {
-    pulse_zoom = 0,
-};
+pub const PostProcessEffect = effects.PostProcessEffect;
 
 pub const PassConfig = struct {
     kind: PassKind = .base,
@@ -513,8 +512,7 @@ fn parsePassKind(value: []const u8) !PassKind {
 
 fn parsePostProcessEffect(value: []const u8) !PostProcessEffect {
     const parsed = try parseUnquotedIdentifier(value);
-    if (std.mem.eql(u8, parsed, "pulse_zoom")) return .pulse_zoom;
-    return error.InvalidPipelineValue;
+    return PostProcessEffect.parseConfigName(parsed) orelse error.InvalidPipelineValue;
 }
 
 fn parseUnquotedIdentifier(value: []const u8) ![]const u8 {

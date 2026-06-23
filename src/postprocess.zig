@@ -4,13 +4,13 @@ const Allocator = std.mem.Allocator;
 const audio = @import("audio.zig");
 const AudioSnapshot = audio.Snapshot;
 const AudioUniformPayload = audio.UniformPayload;
+const effects = @import("effects.zig");
 const gl = @import("zgl");
-const pipeline_config = @import("pipeline_config.zig");
 const shader = @import("shader.zig");
 
 const glb = gl.binding;
 
-const PostProcessEffect = pipeline_config.PostProcessEffect;
+const PostProcessEffect = effects.PostProcessEffect;
 
 pub const RenderTarget = struct {
     framebuffer: gl.Framebuffer,
@@ -218,7 +218,7 @@ pub const PostProcessPass = struct {
         setUniform4f(self.audio_state_uniform, audio_uniforms.state);
         setUniform4f(self.audio_visualizer_uniform, audio_uniforms.visualizer);
         gl.uniform1f(self.time_uniform, total_time / std.time.ns_per_s);
-        gl.uniform1i(self.effect_uniform, @intFromEnum(self.effect));
+        gl.uniform1i(self.effect_uniform, self.effect.shaderValue());
 
         gl.activeTexture(.texture_0);
         bindTexture2D(input_texture);

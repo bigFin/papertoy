@@ -12,6 +12,7 @@ const zig_args = @import("zig-args");
 
 const AudioAnalyzer = @import("audio.zig").AudioAnalyzer;
 const CaptureMode = @import("audio.zig").CaptureMode;
+const effects = @import("effects.zig");
 const GlobalAttributes = @import("shader.zig").GlobalAttributes;
 const TimeModulation = @import("shader.zig").TimeModulation;
 const VisualModulation = @import("shader.zig").VisualModulation;
@@ -20,7 +21,7 @@ const PipelineRunner = @import("pipeline.zig").PipelineRunner;
 const pipeline_config = @import("pipeline_config.zig");
 const PipelineConfig = pipeline_config.PipelineConfig;
 const PipelineFileConfig = pipeline_config.FileConfig;
-const PostProcessEffect = pipeline_config.PostProcessEffect;
+const PostProcessEffect = effects.PostProcessEffect;
 const loadPipelineFileConfig = pipeline_config.loadFileConfig;
 
 const egl = @cImport({
@@ -41,6 +42,7 @@ pub const std_options: std.Options = .{
 
 test {
     _ = @import("audio.zig");
+    _ = @import("effects.zig");
     _ = @import("pipeline_config.zig");
     _ = @import("postprocess.zig");
     _ = @import("shader.zig");
