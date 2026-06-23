@@ -1107,7 +1107,6 @@ pub fn printUsage() !void {
 pub fn printEffects() !void {
     var writer_buf: [256]u8 = undefined;
     var stdout = std.fs.File.stdout().writer(&writer_buf);
-    defer stdout.interface.flush() catch unreachable;
 
     try stdout.interface.writeAll(
         \\Built-in postprocess effects:
@@ -1131,6 +1130,7 @@ pub fn printEffects() !void {
             info.strength.useful_max,
         });
     }
+    try stdout.interface.flush();
 }
 
 fn handleArgsError(err: zig_args.Error) !void {
