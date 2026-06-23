@@ -14,6 +14,7 @@ const AudioAnalyzer = @import("audio.zig").AudioAnalyzer;
 const CaptureMode = @import("audio.zig").CaptureMode;
 const effects = @import("effects.zig");
 const GlobalAttributes = @import("shader.zig").GlobalAttributes;
+const overlay = @import("overlay.zig");
 const TimeModulation = @import("shader.zig").TimeModulation;
 const VisualModulation = @import("shader.zig").VisualModulation;
 const VisualStyle = @import("shader.zig").VisualStyle;
@@ -46,6 +47,7 @@ pub const std_options: std.Options = .{
 test {
     _ = @import("audio.zig");
     _ = @import("effects.zig");
+    _ = @import("overlay.zig");
     _ = @import("pipeline_config.zig");
     _ = @import("postprocess.zig");
     _ = @import("shader.zig");
@@ -912,6 +914,7 @@ const Options = struct {
     @"audio-visual-strength": ?f32 = null,
     @"audio-visual-style": ?[]const u8 = null,
     @"audio-debug": bool = false,
+    @"audio-overlay": bool = false,
     @"list-effects": bool = false,
     help: bool = false,
 };
@@ -1100,6 +1103,7 @@ pub fn printUsage() !void {
         \\  --audio-visual-strength <f> Set the strength of generic visual modulation (default: 1.0)
         \\  --audio-visual-style <s> Visual style: blend (default), pulse, drift, strobe, heat
         \\  --audio-debug      Print live audio analyzer values to the terminal
+        \\  --audio-overlay    Draw a compact live audio analyzer overlay
         \\  --list-effects     List built-in postprocess effects and exit
         \\  --help             Show this help message
         \\
@@ -1519,9 +1523,9 @@ pub fn main() !u8 {
 
     var audio_analyzer = AudioAnalyzer.init(allocator, .{
         .enabled = if (pipeline_file_config) |config|
-            config.audio_enabled or config.time_modulation.enabled or config.visual_modulation.enabled
+            config.audio_enabled or config.time_modulation.enabled or config.visual_modulation.enabled or options.options.@"audio-overlay"
         else
-            options.options.@"audio-reactive" or options.options.@"audio-time-reactive" or options.options.@"audio-visual-reactive",
+            options.options.@"audio-reactive" or options.options.@"audio-time-reactive" or options.options.@"audio-visual-reactive" or options.options.@"audio-overlay",
         .target = if (pipeline_file_config) |config| config.audio_target else options.options.@"audio-target",
         .capture_mode = if (pipeline_file_config) |config| config.audio_capture_mode else cli_capture_mode,
     });
@@ -1695,6 +1699,9 @@ pub fn main() !u8 {
 
             paper.global_attributes.bind();
             try paper.pipeline.render(audio_snapshot);
+            if (options.options.@"audio-overlay") {
+                overlay.renderAudioOverlay(audio_snapshot, .{ .width = paper.surface.width, .height = paper.surface.height });
+            }
 
             switch (paper.next_frame_strategy) {
                 .Vsync => {

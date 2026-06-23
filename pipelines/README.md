@@ -121,6 +121,7 @@ The remaining top-level runtime controls still come from the CLI:
 - `--frame-rate`
 - `--resolution`
 - `--audio-debug`
+- `--audio-overlay`
 
 ## Examples
 

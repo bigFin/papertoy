@@ -90,6 +90,18 @@ set is:
 - `shock_ring`: animated radial ripple and color separation for more chaotic
   moments
 
+### Live Overlay
+
+```console
+papertoy --audio-overlay SHADER_FILE
+papertoy --pipeline pipelines/desktop-audio-post.example.toml --audio-overlay
+```
+
+This draws a compact bar overlay for the analyzer signals directly on the
+wallpaper. It uses the same values as `--audio-debug`: level, bass, mid, treble,
+beat, impact, energy, drive, and brightness. Enabling the overlay also enables
+audio capture.
+
 ## Current Behavior
 
 ### Device Selection
@@ -133,6 +145,7 @@ raw audio band values.
 - Audio-time-reactive mode is a secondary compatibility mode.
 - Pipeline postprocess effects are the preferred path for reusable generic
   visual reactions.
+- `--audio-overlay` is useful while tuning analyzers, presets, and effects.
 - Sink-monitor capture is the intended default for music-reactive visuals.
 - Source mode is still valuable as a live-performance or mic-reactive mode.
 
@@ -151,8 +164,6 @@ raw audio band values.
 
 ### High Priority
 
-- Add an overlay mode for live values such as target, impact, beat, drive, and
-  brightness. Terminal debug output already exists through `--audio-debug`.
 - Tune smoothing, decay, and weighting for the derived visualizer signals.
 
 ### Likely Direction
