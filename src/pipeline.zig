@@ -391,9 +391,9 @@ pub const PipelineRunner = struct {
         self.base_pass.destroy(allocator);
     }
 
-    pub fn resize(self: *PipelineRunner, resolution: shader.Resolution) void {
+    pub fn resize(self: *PipelineRunner, resolution: shader.Resolution) !void {
         self.base_pass.resolution = resolution;
-        if (self.offscreen_target) |*target| target.resize(resolution) catch unreachable;
+        if (self.offscreen_target) |*target| try target.resize(resolution);
         if (self.post_pass) |*pass| pass.resolution = resolution;
     }
 

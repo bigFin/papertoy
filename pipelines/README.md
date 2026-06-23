@@ -89,9 +89,9 @@ The remaining top-level runtime controls still come from the CLI:
 
 ## Examples
 
-- [desktop-audio.example.toml](/storage/code/papertoy/pipelines/desktop-audio.example.toml)
-- [desktop-audio-post.example.toml](/storage/code/papertoy/pipelines/desktop-audio-post.example.toml)
-- [desktop-static.example.toml](/storage/code/papertoy/pipelines/desktop-static.example.toml)
+- [desktop-audio.example.toml](desktop-audio.example.toml)
+- [desktop-audio-post.example.toml](desktop-audio-post.example.toml)
+- [desktop-static.example.toml](desktop-static.example.toml)
 
 ## Next Step
 

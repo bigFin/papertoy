@@ -67,6 +67,13 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    exe_unit_tests.root_module.addImport("wayland", wayland);
+    exe_unit_tests.root_module.addImport("zgl", zgl.module("zgl"));
+    exe_unit_tests.root_module.addImport("zig-args", zig_args.module("args"));
+    exe_unit_tests.linkLibC();
+    exe_unit_tests.linkSystemLibrary("wayland-client");
+    exe_unit_tests.linkSystemLibrary("wayland-egl");
+    exe_unit_tests.linkSystemLibrary("EGL");
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
 
     const test_step = b.step("test", "Run unit tests");

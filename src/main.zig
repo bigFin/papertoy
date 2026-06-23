@@ -512,68 +512,42 @@ const WlrSurface = struct {
         self.config_dirty = false;
         self.wlr_surface.ackConfigure(config.serial);
 
-        // Determine the logical size of the surface.
-        var logical_width = config.width;
-        var logical_height = config.height;
+        const fractional_scale_ready = if (self.fractional_scale) |fs|
+            if (fs.ready) fs.preferred_scale else null
+        else
+            null;
+        const configured = computeSurfaceConfiguration(.{
+            .configure_width = config.width,
+            .configure_height = config.height,
+            .output_width = self.output.width,
+            .output_height = self.output.height,
+            .output_scale = self.output.scale,
+            .output_transform = self.output.transform,
+            .has_fractional_scale = self.fractional_scale != null,
+            .fractional_scale = fractional_scale_ready,
+            .custom_resolution = self.custom_resolution,
+        });
 
-        // If the compositor sends a zero dimension, it means we should decide
-        // that size. Default only the zero axis to the output's logical size.
-        if (logical_width == 0 or logical_height == 0) {
-            var output_width = self.output.width;
-            var output_height = self.output.height;
-
-            // If the output is rotated 90 or 270 degrees, swap width and height.
-            switch (self.output.transform) {
-                .@"90", .@"270", .flipped_90, .flipped_270 => {
-                    std.mem.swap(u32, &output_width, &output_height);
-                },
-                else => {},
-            }
-
-            if (logical_width == 0) logical_width = output_width / self.output.scale;
-            if (logical_height == 0) logical_height = output_height / self.output.scale;
-        }
-
-        // Custom resolution overrides everything.
-        if (self.custom_resolution) |resolution| {
-            logical_width = resolution.width;
-            logical_height = resolution.height;
-        }
-
-        var buffer_width = logical_width;
-        var buffer_height = logical_height;
-        var buffer_scale: i32 = @intCast(self.scale);
-
-        if (self.fractional_scale) |fs| {
-            buffer_width = fs.scaleSize(logical_width);
-            buffer_height = fs.scaleSize(logical_height);
-            buffer_scale = 1;
-        } else {
-            buffer_width = logical_width * self.output.scale;
-            buffer_height = logical_height * self.output.scale;
-            buffer_scale = @intCast(self.output.scale);
-        }
-
-        const width_changed = self.width != buffer_width;
-        const height_changed = self.height != buffer_height;
+        const width_changed = self.width != configured.buffer_width;
+        const height_changed = self.height != configured.buffer_height;
         // We also need to check if destination size changed, or scale changed.
-        const dest_width_changed = self.destination_width != logical_width;
-        const dest_height_changed = self.destination_height != logical_height;
-        const scale_changed = self.scale != buffer_scale;
+        const dest_width_changed = self.destination_width != configured.destination_width;
+        const dest_height_changed = self.destination_height != configured.destination_height;
+        const scale_changed = self.scale != configured.buffer_scale;
 
         if (!width_changed and !height_changed and !dest_width_changed and !dest_height_changed and !scale_changed) return false;
 
-        self.width = buffer_width;
-        self.height = buffer_height;
-        self.destination_width = logical_width;
-        self.destination_height = logical_height;
-        self.scale = @intCast(buffer_scale);
+        self.width = configured.buffer_width;
+        self.height = configured.buffer_height;
+        self.destination_width = configured.destination_width;
+        self.destination_height = configured.destination_height;
+        self.scale = @intCast(configured.buffer_scale);
 
-        self.wl_surface.setBufferScale(buffer_scale);
+        self.wl_surface.setBufferScale(configured.buffer_scale);
         self.wlr_surface.setSize(self.destination_width, self.destination_height);
         self.wl_egl_window.resize(@intCast(self.width), @intCast(self.height), 0, 0);
 
-        std.log.debug("Surface configured: Buffer={}x{}, Logical={}x{}, Scale={}", .{ self.width, self.height, self.destination_width, self.destination_height, buffer_scale });
+        std.log.debug("Surface configured: Buffer={}x{}, Logical={}x{}, Scale={}", .{ self.width, self.height, self.destination_width, self.destination_height, configured.buffer_scale });
 
         if (self.viewport) |viewport| {
             viewport.setSource(.fromInt(0), .fromInt(0), .fromInt(@intCast(self.width)), .fromInt(@intCast(self.height)));
@@ -600,6 +574,78 @@ const WlrSurface = struct {
         }
     }
 };
+
+const SurfaceConfigurationInput = struct {
+    configure_width: u32,
+    configure_height: u32,
+    output_width: u32,
+    output_height: u32,
+    output_scale: u32,
+    output_transform: wl.Output.Transform,
+    has_fractional_scale: bool,
+    fractional_scale: ?u32,
+    custom_resolution: ?Resolution,
+};
+
+const SurfaceConfiguration = struct {
+    buffer_width: u32,
+    buffer_height: u32,
+    destination_width: u32,
+    destination_height: u32,
+    buffer_scale: i32,
+};
+
+fn computeSurfaceConfiguration(input: SurfaceConfigurationInput) SurfaceConfiguration {
+    var logical_width = input.configure_width;
+    var logical_height = input.configure_height;
+
+    if (logical_width == 0 or logical_height == 0) {
+        var output_width = input.output_width;
+        var output_height = input.output_height;
+
+        switch (input.output_transform) {
+            .@"90", .@"270", .flipped_90, .flipped_270 => {
+                std.mem.swap(u32, &output_width, &output_height);
+            },
+            else => {},
+        }
+
+        if (logical_width == 0) logical_width = output_width / input.output_scale;
+        if (logical_height == 0) logical_height = output_height / input.output_scale;
+    }
+
+    if (input.custom_resolution) |resolution| {
+        logical_width = resolution.width;
+        logical_height = resolution.height;
+    }
+
+    if (input.has_fractional_scale) {
+        const buffer_width = scaleWithFractionalScale(input.fractional_scale, logical_width);
+        const buffer_height = scaleWithFractionalScale(input.fractional_scale, logical_height);
+        return .{
+            .buffer_width = buffer_width,
+            .buffer_height = buffer_height,
+            .destination_width = logical_width,
+            .destination_height = logical_height,
+            .buffer_scale = 1,
+        };
+    }
+
+    return .{
+        .buffer_width = logical_width * input.output_scale,
+        .buffer_height = logical_height * input.output_scale,
+        .destination_width = logical_width,
+        .destination_height = logical_height,
+        .buffer_scale = @intCast(input.output_scale),
+    };
+}
+
+fn scaleWithFractionalScale(preferred_scale: ?u32, size: u32) u32 {
+    return if (preferred_scale) |scale|
+        (size * scale) / 120
+    else
+        size;
+}
 
 /// A fractional scale object, getting the fractional scale for a Wayland surface.
 /// The surface must live at least as long as the fractional scale object.
@@ -632,10 +678,7 @@ const FractionalScale = struct {
     /// Scale the given size by the preferred scale. If no preferred scale has been set yet,
     /// this will return the original size.
     pub fn scaleSize(self: *FractionalScale, size: u32) u32 {
-        return if (self.ready)
-            (size * self.preferred_scale) / 120
-        else
-            size;
+        return scaleWithFractionalScale(if (self.ready) self.preferred_scale else null, size);
     }
 
     /// The listener callback. This should be passed to `wp.FractionalScaleV1.setListener`.
@@ -655,6 +698,86 @@ const Resolution = struct {
     width: u32,
     height: u32,
 };
+
+test "computeSurfaceConfiguration defaults partial zero axes from transformed output" {
+    const configured = computeSurfaceConfiguration(.{
+        .configure_width = 0,
+        .configure_height = 720,
+        .output_width = 3440,
+        .output_height = 1440,
+        .output_scale = 1,
+        .output_transform = .@"270",
+        .has_fractional_scale = false,
+        .fractional_scale = null,
+        .custom_resolution = null,
+    });
+
+    try std.testing.expectEqual(@as(u32, 1440), configured.destination_width);
+    try std.testing.expectEqual(@as(u32, 720), configured.destination_height);
+    try std.testing.expectEqual(@as(u32, 1440), configured.buffer_width);
+    try std.testing.expectEqual(@as(u32, 720), configured.buffer_height);
+    try std.testing.expectEqual(@as(i32, 1), configured.buffer_scale);
+}
+
+test "computeSurfaceConfiguration applies integer output scale without fractional scale" {
+    const configured = computeSurfaceConfiguration(.{
+        .configure_width = 1000,
+        .configure_height = 500,
+        .output_width = 2000,
+        .output_height = 1000,
+        .output_scale = 2,
+        .output_transform = .normal,
+        .has_fractional_scale = false,
+        .fractional_scale = null,
+        .custom_resolution = null,
+    });
+
+    try std.testing.expectEqual(@as(u32, 1000), configured.destination_width);
+    try std.testing.expectEqual(@as(u32, 500), configured.destination_height);
+    try std.testing.expectEqual(@as(u32, 2000), configured.buffer_width);
+    try std.testing.expectEqual(@as(u32, 1000), configured.buffer_height);
+    try std.testing.expectEqual(@as(i32, 2), configured.buffer_scale);
+}
+
+test "computeSurfaceConfiguration applies fractional scale with buffer scale one" {
+    const configured = computeSurfaceConfiguration(.{
+        .configure_width = 1000,
+        .configure_height = 500,
+        .output_width = 2000,
+        .output_height = 1000,
+        .output_scale = 2,
+        .output_transform = .normal,
+        .has_fractional_scale = true,
+        .fractional_scale = 150,
+        .custom_resolution = null,
+    });
+
+    try std.testing.expectEqual(@as(u32, 1000), configured.destination_width);
+    try std.testing.expectEqual(@as(u32, 500), configured.destination_height);
+    try std.testing.expectEqual(@as(u32, 1250), configured.buffer_width);
+    try std.testing.expectEqual(@as(u32, 625), configured.buffer_height);
+    try std.testing.expectEqual(@as(i32, 1), configured.buffer_scale);
+}
+
+test "computeSurfaceConfiguration lets custom resolution override compositor size" {
+    const configured = computeSurfaceConfiguration(.{
+        .configure_width = 1920,
+        .configure_height = 1080,
+        .output_width = 3840,
+        .output_height = 2160,
+        .output_scale = 1,
+        .output_transform = .normal,
+        .has_fractional_scale = true,
+        .fractional_scale = null,
+        .custom_resolution = .{ .width = 800, .height = 600 },
+    });
+
+    try std.testing.expectEqual(@as(u32, 800), configured.destination_width);
+    try std.testing.expectEqual(@as(u32, 600), configured.destination_height);
+    try std.testing.expectEqual(@as(u32, 800), configured.buffer_width);
+    try std.testing.expectEqual(@as(u32, 600), configured.buffer_height);
+    try std.testing.expectEqual(@as(i32, 1), configured.buffer_scale);
+}
 
 const OutputConfig = struct {
     id: ?[]const u8 = null,
@@ -1030,6 +1153,14 @@ const Paper = struct {
         self.surface.deinit();
         self.allocator.destroy(self);
     }
+
+    pub fn handleConfiguration(self: *Paper) !void {
+        try self.surface.makeCurrent();
+        if (try self.surface.handleConfiguration()) {
+            try self.pipeline.resize(.{ .width = self.surface.width, .height = self.surface.height });
+            gl.viewport(0, 0, self.surface.width, self.surface.height);
+        }
+    }
 };
 
 pub fn main() !u8 {
@@ -1327,7 +1458,7 @@ pub fn main() !u8 {
     if (display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
 
     for (papers.items) |paper| {
-        _ = try paper.surface.handleConfiguration();
+        try paper.handleConfiguration();
     }
 
     var next_audio_debug_ns: u64 = 0;
@@ -1377,12 +1508,7 @@ pub fn main() !u8 {
             // We are going to render
             rendered_count += 1;
 
-            try paper.surface.makeCurrent();
-
-            if (try paper.surface.handleConfiguration()) {
-                // Resolution changed
-                paper.pipeline.resize(.{ .width = paper.surface.width, .height = paper.surface.height });
-            }
+            try paper.handleConfiguration();
             // Update viewport and resolution uniforms every frame because each output may have
             // a different configured size.
             gl.viewport(0, 0, paper.surface.width, paper.surface.height);
