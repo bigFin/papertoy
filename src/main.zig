@@ -1119,12 +1119,16 @@ pub fn printEffects() !void {
             \\    {s}
             \\    drivers: {s}
             \\    use: {s}
+            \\    strength: default {d:.2}, useful {d:.2}-{d:.2}
             \\
         , .{
             info.effect.configName(),
             info.summary,
             info.drivers,
             info.good_use,
+            info.strength.default,
+            info.strength.useful_min,
+            info.strength.useful_max,
         });
     }
 }

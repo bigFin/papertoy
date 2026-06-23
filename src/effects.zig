@@ -9,6 +9,13 @@ pub const PostProcessEffectInfo = struct {
     summary: []const u8,
     drivers: []const u8,
     good_use: []const u8,
+    strength: StrengthHint,
+};
+
+pub const StrengthHint = struct {
+    default: f32,
+    useful_min: f32,
+    useful_max: f32,
 };
 
 pub const PostProcessEffect = enum(i32) {
@@ -48,30 +55,35 @@ const post_process_effect_infos = [_]PostProcessEffectInfo{
         .summary = "zoom, contrast, and subtle swirl",
         .drivers = "impact, energy, brightness",
         .good_use = "first pass after the base shader",
+        .strength = .{ .default = 0.75, .useful_min = 0.35, .useful_max = 1.15 },
     },
     .{
         .effect = .glow_grade,
         .summary = "glow, saturation, and contrast lift",
         .drivers = "energy, brightness",
         .good_use = "grading and bloom-like polish",
+        .strength = .{ .default = 0.70, .useful_min = 0.40, .useful_max = 1.00 },
     },
     .{
         .effect = .heat_shift,
         .summary = "warm chromatic shimmer",
         .drivers = "bass, impact, energy",
         .good_use = "color movement and heat haze",
+        .strength = .{ .default = 0.50, .useful_min = 0.20, .useful_max = 0.85 },
     },
     .{
         .effect = .impact_flash,
         .summary = "flash, ring, and vignette",
         .drivers = "beat, impact, brightness",
         .good_use = "beat accents near the end of a chain",
+        .strength = .{ .default = 0.55, .useful_min = 0.25, .useful_max = 0.90 },
     },
     .{
         .effect = .shock_ring,
         .summary = "radial ripple and color separation",
         .drivers = "beat, impact, drive, brightness",
         .good_use = "deliberately trippy accent chains",
+        .strength = .{ .default = 0.75, .useful_min = 0.35, .useful_max = 0.95 },
     },
 };
 
@@ -113,5 +125,8 @@ test "postprocess effect metadata covers every effect" {
         try std.testing.expect(info.summary.len > 0);
         try std.testing.expect(info.drivers.len > 0);
         try std.testing.expect(info.good_use.len > 0);
+        try std.testing.expect(info.strength.useful_min >= 0.0);
+        try std.testing.expect(info.strength.default >= info.strength.useful_min);
+        try std.testing.expect(info.strength.default <= info.strength.useful_max);
     }
 }

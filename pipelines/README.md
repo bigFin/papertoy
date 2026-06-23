@@ -83,7 +83,8 @@ Compatibility:
 
 ## Built-In Effects
 
-Run `papertoy --list-effects` to print the built-in effect list from the CLI.
+Run `papertoy --list-effects` to print the built-in effect list and strength
+guidance from the CLI.
 
 | Effect | Feel | Main audio drivers | Good use |
 | --- | --- | --- | --- |
@@ -94,7 +95,8 @@ Run `papertoy --list-effects` to print the built-in effect list from the CLI.
 | `shock_ring` | radial ripple and color separation | beat, impact, drive, brightness | deliberately trippy accent chains |
 
 `strength` scales the audio-reactive inputs for that pass. Effects are ordered:
-each postprocess pass samples the output of the previous pass.
+each postprocess pass samples the output of the previous pass. The CLI strength
+values are tuning hints, not hard validation limits.
 
 ## CLI Interaction
 

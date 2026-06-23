@@ -399,12 +399,12 @@ Implemented in this branch:
 - shared compiled postprocess shader program per output pipeline
 - built-in effects: `pulse_zoom`, `glow_grade`, `heat_shift`,
   `impact_flash`, and `shock_ring`
+- per-effect metadata for CLI discovery and strength tuning guidance
 - example pipelines under `pipelines/`, including calmer and more intense
   audio-reactive presets
 
 Recommended next work:
 
-- consider simple per-effect parameter metadata before adding many more effects
 - decide whether file-based postprocess shaders belong in this branch or a
   later branch
 - update screenshots or recordings once the branch is ready to publish
