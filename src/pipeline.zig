@@ -140,6 +140,139 @@ pub const FileConfig = struct {
     }
 };
 
+fn testingTmpPath(allocator: Allocator, tmp_dir: *const std.testing.TmpDir, sub_path: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/{s}", .{ tmp_dir.sub_path[0..], sub_path });
+}
+
+test "loadFileConfig parses pass pipeline audio and modulation sections" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "pipeline.toml",
+        .data =
+        \\[[passes]]
+        \\kind = base
+        \\path = "shader.glsl"
+        \\
+        \\[[passes]]
+        \\kind = postprocess
+        \\effect = pulse_zoom
+        \\strength = 1.25
+        \\
+        \\[audio]
+        \\enabled = true
+        \\capture = source
+        \\target = "music-monitor"
+        \\
+        \\[modulation]
+        \\time_reactive = true
+        \\time_strength = 1.75
+        \\visual_reactive = true
+        \\visual_strength = 0.80
+        \\visual_style = heat
+        \\
+        ,
+    });
+
+    const pipeline_path = try testingTmpPath(allocator, &tmp, "pipeline.toml");
+    defer allocator.free(pipeline_path);
+
+    var config = try loadFileConfig(allocator, pipeline_path);
+    defer config.deinit(allocator);
+
+    const expected_base_path = try std.fs.path.resolve(allocator, &.{ ".zig-cache/tmp", tmp.sub_path[0..], "shader.glsl" });
+    defer allocator.free(expected_base_path);
+
+    try std.testing.expectEqualStrings(expected_base_path, config.base_path);
+    try std.testing.expectEqual(PostProcessEffect.pulse_zoom, config.post_effect.?);
+    try std.testing.expectEqual(@as(f32, 1.25), config.post_strength);
+    try std.testing.expect(config.audio_enabled);
+    try std.testing.expectEqual(audio.CaptureMode.source, config.audio_capture_mode);
+    try std.testing.expectEqualStrings("music-monitor", config.audio_target.?);
+    try std.testing.expect(config.time_modulation.enabled);
+    try std.testing.expectEqual(@as(f32, 1.75), config.time_modulation.strength);
+    try std.testing.expect(config.visual_modulation.enabled);
+    try std.testing.expectEqual(@as(f32, 0.80), config.visual_modulation.strength);
+    try std.testing.expectEqual(shader.VisualStyle.heat, config.visual_modulation.style);
+}
+
+test "loadFileConfig treats auto audio target as default target" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "pipeline.toml",
+        .data =
+        \\[pipeline]
+        \\base = "shader.glsl"
+        \\
+        \\[audio]
+        \\enabled = true
+        \\capture = sink
+        \\target = "auto"
+        \\
+        ,
+    });
+
+    const pipeline_path = try testingTmpPath(allocator, &tmp, "pipeline.toml");
+    defer allocator.free(pipeline_path);
+
+    var config = try loadFileConfig(allocator, pipeline_path);
+    defer config.deinit(allocator);
+
+    try std.testing.expect(config.audio_enabled);
+    try std.testing.expectEqual(audio.CaptureMode.sink, config.audio_capture_mode);
+    try std.testing.expectEqual(@as(?[]u8, null), config.audio_target);
+}
+
+test "loadFileConfig rejects invalid pass combinations" {
+    const allocator = std.testing.allocator;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(.{
+        .sub_path = "duplicate-base.toml",
+        .data =
+        \\[[passes]]
+        \\kind = base
+        \\path = "first.glsl"
+        \\
+        \\[[passes]]
+        \\kind = base
+        \\path = "second.glsl"
+        \\
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "postprocess-with-path.toml",
+        .data =
+        \\[[passes]]
+        \\kind = base
+        \\path = "shader.glsl"
+        \\
+        \\[[passes]]
+        \\kind = postprocess
+        \\path = "not-used.glsl"
+        \\effect = pulse_zoom
+        \\
+        ,
+    });
+
+    const duplicate_base_path = try testingTmpPath(allocator, &tmp, "duplicate-base.toml");
+    defer allocator.free(duplicate_base_path);
+    try std.testing.expectError(error.InvalidPipelineSyntax, loadFileConfig(allocator, duplicate_base_path));
+
+    const postprocess_with_path = try testingTmpPath(allocator, &tmp, "postprocess-with-path.toml");
+    defer allocator.free(postprocess_with_path);
+    try std.testing.expectError(error.InvalidPipelineSyntax, loadFileConfig(allocator, postprocess_with_path));
+}
+
 pub const ParseError = error{
     MissingEnvironmentVariable,
     MissingBaseShader,
