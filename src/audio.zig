@@ -26,6 +26,9 @@ pub const CaptureMode = enum {
     source,
 };
 
+const target_refresh_interval_ns = 2 * std.time.ns_per_s;
+const failure_retry_interval_ns = 10 * std.time.ns_per_s;
+
 const SharedState = struct {
     mutex: std.Thread.Mutex = .{},
     snapshot: Snapshot = .{},
@@ -290,13 +293,14 @@ pub const AudioAnalyzer = struct {
         const now_ns = nowNs() catch return;
         const backend_dead = self.backend == null or self.backendTerminated();
         if (!force and !backend_dead and now_ns < self.next_refresh_ns) return;
-        self.next_refresh_ns = now_ns + (2 * std.time.ns_per_s);
+        self.next_refresh_ns = now_ns + target_refresh_interval_ns;
 
         const target = if (self.requested_target) |manual_target|
             self.allocator.dupe(u8, manual_target) catch return
         else
             self.resolveDefaultTarget() catch |err| {
-                std.log.warn("failed to resolve default audio target: {}", .{err});
+                self.next_refresh_ns = now_ns + failure_retry_interval_ns;
+                std.log.warn("failed to resolve default audio target via wpctl: {s}; continuing with inactive audio inputs", .{resolveTargetErrorMessage(err)});
                 return;
             };
         defer self.allocator.free(target);
@@ -317,7 +321,11 @@ pub const AudioAnalyzer = struct {
             std.log.info("audio-reactive target: {s} ({s}, auto)", .{ self.active_target.?, self.captureModeLabel() });
         }
         self.startPipeWire(self.active_target.?) catch |err| {
-            std.log.warn("failed to start audio-reactive capture via PipeWire for target '{s}': {}; continuing with inactive audio inputs", .{ self.active_target.?, err });
+            self.next_refresh_ns = now_ns + failure_retry_interval_ns;
+            std.log.warn("failed to start audio-reactive capture via pw-record for target '{s}': {s}; continuing with inactive audio inputs", .{
+                self.active_target.?,
+                pipeWireStartErrorMessage(err),
+            });
             self.allocator.free(self.active_target.?);
             self.active_target = null;
         };
@@ -451,3 +459,28 @@ pub const AudioAnalyzer = struct {
         }
     }
 };
+
+fn resolveTargetErrorMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.FileNotFound => "wpctl was not found in PATH",
+        error.WpctlFailed => "wpctl inspect failed for the default audio node",
+        error.DefaultAudioSinkNotFound => "wpctl did not report a default audio sink node.name",
+        error.DefaultAudioSourceNotFound => "wpctl did not report a default audio source node.name",
+        else => @errorName(err),
+    };
+}
+
+fn pipeWireStartErrorMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.FileNotFound => "pw-record was not found in PATH",
+        error.AccessDenied => "pw-record could not access the requested PipeWire target",
+        error.MissingChildStdout => "pw-record did not provide an audio stream",
+        else => @errorName(err),
+    };
+}
+
+test "audio backend error messages name missing commands" {
+    try std.testing.expectEqualStrings("wpctl was not found in PATH", resolveTargetErrorMessage(error.FileNotFound));
+    try std.testing.expectEqualStrings("pw-record was not found in PATH", pipeWireStartErrorMessage(error.FileNotFound));
+    try std.testing.expectEqualStrings("CustomFailure", pipeWireStartErrorMessage(error.CustomFailure));
+}
