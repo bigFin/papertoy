@@ -228,8 +228,17 @@ pub const PostProcessProgram = struct {
     audio_visualizer_uniform: ?u32,
     time_uniform: ?u32,
     effect_uniform: ?u32,
+    strength_uniform: ?u32,
 
     pub fn init(allocator: Allocator) !PostProcessProgram {
+        return initWithFragmentSource(allocator, POST_PROCESS_FRAGMENT_SOURCE, "built-in");
+    }
+
+    pub fn initCustom(allocator: Allocator, source: []const u8) !PostProcessProgram {
+        return initWithFragmentSource(allocator, source, "custom");
+    }
+
+    fn initWithFragmentSource(allocator: Allocator, source: []const u8, label: []const u8) !PostProcessProgram {
         const vert = gl.Shader.create(.vertex);
         defer vert.delete();
         vert.source(1, &.{POST_PROCESS_VERTEX_SOURCE[0..]});
@@ -237,14 +246,14 @@ pub const PostProcessProgram = struct {
 
         const frag = gl.Shader.create(.fragment);
         defer frag.delete();
-        frag.source(1, &.{POST_PROCESS_FRAGMENT_SOURCE[0..]});
+        frag.source(1, &.{source});
         frag.compile();
 
         const frag_compiled = frag.get(.compile_status) == gl.binding.TRUE;
         if (!frag_compiled) {
             const log = try frag.getCompileLog(allocator);
             defer allocator.free(log);
-            std.log.err("failed to compile post-process shader:\n{s}", .{log});
+            std.log.err("failed to compile {s} post-process shader:\n{s}", .{ label, log });
             return error.InvalidPipelineValue;
         }
 
@@ -256,7 +265,7 @@ pub const PostProcessProgram = struct {
         if (program.get(.link_status) != gl.binding.TRUE) {
             const log = try program.getCompileLog(allocator);
             defer allocator.free(log);
-            std.log.err("failed to link post-process shader:\n{s}", .{log});
+            std.log.err("failed to link {s} post-process shader:\n{s}", .{ label, log });
             return error.InvalidPipelineValue;
         }
 
@@ -269,6 +278,7 @@ pub const PostProcessProgram = struct {
             .audio_visualizer_uniform = program.uniformLocation("uAudioVisualizer"),
             .time_uniform = program.uniformLocation("uTime"),
             .effect_uniform = program.uniformLocation("uEffect"),
+            .strength_uniform = program.uniformLocation("uStrength"),
         };
     }
 
@@ -280,7 +290,8 @@ pub const PostProcessProgram = struct {
 
 pub const PostProcessPass = struct {
     resolution: shader.Resolution,
-    effect: PostProcessEffect,
+    effect: ?PostProcessEffect = null,
+    custom_program: ?PostProcessProgram = null,
     strength: f32 = 1.0,
     started: bool = false,
     first_rendered: std.time.Instant = undefined,
@@ -292,7 +303,21 @@ pub const PostProcessPass = struct {
         };
     }
 
-    pub fn render(self: *PostProcessPass, program: *PostProcessProgram, input_texture: gl.Texture, snapshot: AudioSnapshot) !void {
+    pub fn initCustom(allocator: Allocator, resolution: shader.Resolution, source: []const u8) !PostProcessPass {
+        return .{
+            .resolution = resolution,
+            .custom_program = try PostProcessProgram.initCustom(allocator, source),
+        };
+    }
+
+    pub fn deinit(self: *PostProcessPass, allocator: Allocator) void {
+        if (self.custom_program) |*program| {
+            program.deinit(allocator);
+            self.custom_program = null;
+        }
+    }
+
+    pub fn render(self: *PostProcessPass, shared_program: ?*PostProcessProgram, input_texture: gl.Texture, snapshot: AudioSnapshot) !void {
         if (!self.started) {
             self.first_rendered = try std.time.Instant.now();
             self.started = true;
@@ -301,6 +326,7 @@ pub const PostProcessPass = struct {
         const total_time: f32 = @floatFromInt(now.since(self.first_rendered));
 
         const audio_uniforms = AudioUniformPayload.fromSnapshot(snapshot).withEffectStrength(self.strength);
+        const program = if (self.custom_program) |*custom_program| custom_program else shared_program orelse return error.InvalidPipelineValue;
 
         program.program.use();
         gl.uniform1i(program.input_texture_uniform, 0);
@@ -309,7 +335,8 @@ pub const PostProcessPass = struct {
         setUniform4f(program.audio_state_uniform, audio_uniforms.state);
         setUniform4f(program.audio_visualizer_uniform, audio_uniforms.visualizer);
         gl.uniform1f(program.time_uniform, total_time / std.time.ns_per_s);
-        gl.uniform1i(program.effect_uniform, self.effect.shaderValue());
+        gl.uniform1f(program.strength_uniform, self.strength);
+        gl.uniform1i(program.effect_uniform, if (self.effect) |effect| effect.shaderValue() else -1);
 
         gl.activeTexture(.texture_0);
         bindTexture2D(input_texture);

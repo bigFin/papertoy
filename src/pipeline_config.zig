@@ -17,7 +17,9 @@ pub const max_passes = max_postprocess_passes + 1;
 const max_pipeline_file_size = 1024 * 1024;
 
 pub const PostProcessConfig = struct {
-    effect: PostProcessEffect = .pulse_zoom,
+    effect: ?PostProcessEffect = null,
+    path: ?[]const u8 = null,
+    source: ?[]const u8 = null,
     strength: f32 = 1.0,
 };
 
@@ -85,6 +87,7 @@ pub const PipelineConfig = struct {
             passes[i + 1] = .{
                 .kind = .postprocess,
                 .effect = post_config.effect,
+                .source = post_config.source,
                 .strength = post_config.strength,
             };
         }
@@ -188,6 +191,10 @@ pub const FileConfig = struct {
     pub fn deinit(self: *FileConfig, allocator: Allocator) void {
         allocator.free(self.base_path);
         if (self.audio_target) |target| allocator.free(target);
+        for (self.postprocess_passes[0..self.post_count]) |*pass| {
+            if (pass.path) |path| allocator.free(path);
+            if (pass.source) |source| allocator.free(source);
+        }
     }
 };
 
@@ -212,6 +219,11 @@ test "loadFileConfig parses pass pipeline audio and modulation sections" {
         \\kind = "postprocess"
         \\effect = "pulse_zoom"
         \\strength = 1.25
+        \\
+        \\[[passes]]
+        \\kind = postprocess
+        \\path = "post.glsl"
+        \\strength = 0.50
         \\
         \\[[passes]]
         \\kind = postprocess
@@ -244,11 +256,16 @@ test "loadFileConfig parses pass pipeline audio and modulation sections" {
 
     try std.testing.expectEqualStrings(expected_base_path, config.base_path);
     const postprocess_passes = config.activePostprocessPasses();
-    try std.testing.expectEqual(@as(usize, 2), postprocess_passes.len);
-    try std.testing.expectEqual(PostProcessEffect.pulse_zoom, postprocess_passes[0].effect);
+    try std.testing.expectEqual(@as(usize, 3), postprocess_passes.len);
+    try std.testing.expectEqual(PostProcessEffect.pulse_zoom, postprocess_passes[0].effect.?);
     try std.testing.expectEqual(@as(f32, 1.25), postprocess_passes[0].strength);
-    try std.testing.expectEqual(PostProcessEffect.glow_grade, postprocess_passes[1].effect);
-    try std.testing.expectEqual(@as(f32, 0.75), postprocess_passes[1].strength);
+    const expected_post_path = try std.fs.path.resolve(allocator, &.{ ".zig-cache/tmp", tmp.sub_path[0..], "post.glsl" });
+    defer allocator.free(expected_post_path);
+    try std.testing.expectEqualStrings(expected_post_path, postprocess_passes[1].path.?);
+    try std.testing.expectEqual(@as(?PostProcessEffect, null), postprocess_passes[1].effect);
+    try std.testing.expectEqual(@as(f32, 0.50), postprocess_passes[1].strength);
+    try std.testing.expectEqual(PostProcessEffect.glow_grade, postprocess_passes[2].effect.?);
+    try std.testing.expectEqual(@as(f32, 0.75), postprocess_passes[2].strength);
     try std.testing.expect(config.audio_enabled);
     try std.testing.expectEqual(audio.CaptureMode.source, config.audio_capture_mode);
     try std.testing.expectEqualStrings("music-monitor", config.audio_target.?);
@@ -299,6 +316,7 @@ test "tracked example pipeline files parse" {
         "pipelines/desktop-audio-post.example.toml",
         "pipelines/desktop-audio-soft.example.toml",
         "pipelines/desktop-audio-shock.example.toml",
+        "pipelines/desktop-audio-custom-post.example.toml",
     };
 
     for (example_paths) |pipeline_path| {
@@ -351,7 +369,7 @@ test "loadFileConfig rejects invalid pass combinations" {
         ,
     });
     try tmp.dir.writeFile(.{
-        .sub_path = "postprocess-with-path.toml",
+        .sub_path = "postprocess-with-effect-and-path.toml",
         .data =
         \\[[passes]]
         \\kind = base
@@ -369,9 +387,9 @@ test "loadFileConfig rejects invalid pass combinations" {
     defer allocator.free(duplicate_base_path);
     try std.testing.expectError(error.InvalidPipelineSyntax, loadFileConfig(allocator, duplicate_base_path));
 
-    const postprocess_with_path = try testingTmpPath(allocator, &tmp, "postprocess-with-path.toml");
-    defer allocator.free(postprocess_with_path);
-    try std.testing.expectError(error.InvalidPipelineSyntax, loadFileConfig(allocator, postprocess_with_path));
+    const postprocess_with_effect_and_path = try testingTmpPath(allocator, &tmp, "postprocess-with-effect-and-path.toml");
+    defer allocator.free(postprocess_with_effect_and_path);
+    try std.testing.expectError(error.InvalidPipelineSyntax, loadFileConfig(allocator, postprocess_with_effect_and_path));
 }
 
 fn expectLoadDiagnostic(
@@ -536,7 +554,7 @@ test "loadFileConfigWithDiagnostic reports pass validation lines" {
         ,
     });
     try tmp.dir.writeFile(.{
-        .sub_path = "postprocess-path.toml",
+        .sub_path = "postprocess-effect-and-path.toml",
         .data =
         \\[[passes]]
         \\kind = base
@@ -546,6 +564,18 @@ test "loadFileConfigWithDiagnostic reports pass validation lines" {
         \\kind = postprocess
         \\path = "not-used.glsl"
         \\effect = pulse_zoom
+        \\
+        ,
+    });
+    try tmp.dir.writeFile(.{
+        .sub_path = "postprocess-missing-effect-and-path.toml",
+        .data =
+        \\[[passes]]
+        \\kind = base
+        \\path = "shader.glsl"
+        \\
+        \\[[passes]]
+        \\kind = postprocess
         \\
         ,
     });
@@ -581,7 +611,8 @@ test "loadFileConfigWithDiagnostic reports pass validation lines" {
 
     try expectLoadDiagnostic(allocator, &tmp, "missing-base-path.toml", error.MissingPassPath, 1, "base pass must define path");
     try expectLoadDiagnostic(allocator, &tmp, "duplicate-base.toml", error.InvalidPipelineSyntax, 5, "pipeline can only define one base shader");
-    try expectLoadDiagnostic(allocator, &tmp, "postprocess-path.toml", error.InvalidPipelineSyntax, 7, "postprocess pass cannot define path");
+    try expectLoadDiagnostic(allocator, &tmp, "postprocess-effect-and-path.toml", error.InvalidPipelineSyntax, 7, "postprocess pass must define either effect or path, not both");
+    try expectLoadDiagnostic(allocator, &tmp, "postprocess-missing-effect-and-path.toml", error.MissingPassEffect, 5, "postprocess pass must define effect or path");
     try expectLoadDiagnostic(allocator, &tmp, "too-many-postprocess.toml", error.InvalidPipelineSyntax, 21, "pipeline supports at most 4 postprocess passes");
 }
 
@@ -952,20 +983,32 @@ const PipelineFileParser = struct {
     }
 
     fn finalizePostProcessPass(self: *PipelineFileParser) !void {
-        if (self.current_pass_path != null) {
-            try self.setDiagnostic(self.current_pass_path_line, "postprocess pass cannot define path", .{});
+        if (self.current_pass_effect != null and self.current_pass_path != null) {
+            try self.setDiagnostic(self.current_pass_path_line, "postprocess pass must define either effect or path, not both", .{});
             return error.InvalidPipelineSyntax;
         }
-        const effect = self.current_pass_effect orelse {
-            try self.setDiagnostic(self.current_pass_line, "postprocess pass must define effect", .{});
+        if (self.current_pass_effect == null and self.current_pass_path == null) {
+            try self.setDiagnostic(self.current_pass_line, "postprocess pass must define effect or path", .{});
             return error.MissingPassEffect;
-        };
+        }
         if (self.result.post_count >= max_postprocess_passes) {
             try self.setDiagnostic(self.current_pass_line, "pipeline supports at most {} postprocess passes", .{max_postprocess_passes});
             return error.InvalidPipelineSyntax;
         }
+        const resolved_path = if (self.current_pass_path) |path| resolved: {
+            const resolved = resolvePipelinePath(self.allocator, self.pipeline_path, path) catch |err| {
+                if (err == error.MissingEnvironmentVariable) {
+                    try self.setDiagnostic(self.current_pass_path_line, "pipeline path references an environment variable that is not set: {s}", .{path});
+                }
+                return err;
+            };
+            self.allocator.free(path);
+            self.current_pass_path = null;
+            break :resolved resolved;
+        } else null;
         self.result.postprocess_passes[self.result.post_count] = .{
-            .effect = effect,
+            .effect = self.current_pass_effect,
+            .path = resolved_path,
             .strength = self.current_pass_strength,
         };
         self.result.post_count += 1;

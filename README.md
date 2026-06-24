@@ -73,15 +73,15 @@ Audio-reactive shader uniforms and pipeline files are documented separately:
 - [Audio-reactive feature notes](docs/audio-reactive-feature.md)
 - [Pipeline files](pipelines/README.md)
 
-The tracked pipeline examples include an audio-reactive postprocess chain:
+The tracked pipeline examples include audio-reactive postprocess chains:
 
 ```console
 $ PAPERTOY_DEFAULT_SHADER=/path/to/shader.glsl \
     papertoy --pipeline pipelines/desktop-audio-post.example.toml
 ```
 
-Additional pipeline examples include calmer and more intense audio-reactive
-presets under [pipelines](pipelines/).
+Additional pipeline examples include calmer, more intense, and custom GLSL
+postprocess presets under [pipelines](pipelines/).
 
 ### Configuration Examples
 

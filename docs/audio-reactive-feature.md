@@ -3,8 +3,8 @@
 ## Status
 
 Paper Toy now supports audio-reactive shader inputs and optional audio-driven
-time modulation. Pipeline files can also use built-in postprocess effects that
-consume the same audio signals.
+time modulation. Pipeline files can also use built-in or custom GLSL
+postprocess effects that consume the same audio signals.
 
 Current implementation goals:
 
@@ -12,7 +12,8 @@ Current implementation goals:
 - expose generic audio uniforms to shaders
 - support both sink-monitor capture and microphone/source capture
 - provide an opt-in compatibility mode for unmodified `iTime`-driven shaders
-- compose built-in audio-reactive postprocess effects in pipeline files
+- compose built-in and custom audio-reactive postprocess effects in pipeline
+  files
 
 This is intentionally still a feature branch feature. The current behavior is
 useful and fun, but not yet the final shape of a polished visualizer system.
@@ -73,8 +74,8 @@ general-purpose visualizer mapping.
 
 ### Pipeline Postprocess Effects
 
-Pipeline files can enable audio capture and then chain built-in postprocess
-effects:
+Pipeline files can enable audio capture and then chain built-in or custom
+postprocess effects:
 
 ```console
 papertoy --pipeline pipelines/desktop-audio-post.example.toml
@@ -89,6 +90,10 @@ set is:
 - `impact_flash`: beat and impact driven flash, ring, and vignette
 - `shock_ring`: animated radial ripple and color separation for more chaotic
   moments
+
+Custom postprocess passes use `kind = postprocess` with `path = "file.glsl"`.
+They receive the previous pass as `uInputTexture`, normalized `vUv`
+coordinates, `uStrength`, and the same audio vectors as built-in effects.
 
 ### Live Overlay
 
@@ -144,7 +149,7 @@ raw audio band values.
 - Audio-reactive uniforms are the main feature.
 - Audio-time-reactive mode is a secondary compatibility mode.
 - Pipeline postprocess effects are the preferred path for reusable generic
-  visual reactions.
+  visual reactions, whether built-in or custom GLSL.
 - `--audio-overlay` is useful while tuning analyzers, presets, and effects.
 - Sink-monitor capture is the intended default for music-reactive visuals.
 - Source mode is still valuable as a live-performance or mic-reactive mode.
@@ -191,5 +196,5 @@ rebased independently:
 - derived visualizer signals
 - sink-monitor capture fix
 - explicit capture mode selection
-- pipeline files and built-in postprocess effects
-- shared postprocess program and linear postprocess chaining
+- pipeline files and built-in/custom postprocess effects
+- shared postprocess execution and linear postprocess chaining

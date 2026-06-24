@@ -45,13 +45,24 @@ pub const PipelineRunner = struct {
             self.render_target_count += 1;
         }
 
-        self.post_program = try postprocess.PostProcessProgram.init(allocator);
+        const needs_builtin_program = for (passes[1..]) |post_config| {
+            if (post_config.effect != null) break true;
+        } else false;
+        if (needs_builtin_program) {
+            self.post_program = try postprocess.PostProcessProgram.init(allocator);
+        }
 
         self.post_passes = try allocator.alloc(postprocess.PostProcessPass, post_count);
         for (passes[1..], 0..) |post_config, i| {
-            if (post_config.kind != .postprocess or post_config.effect == null) return error.InvalidPipelineValue;
+            if (post_config.kind != .postprocess) return error.InvalidPipelineValue;
+            const has_effect = post_config.effect != null;
+            const has_source = post_config.source != null;
+            if (has_effect == has_source) return error.InvalidPipelineValue;
 
-            self.post_passes.?[i] = postprocess.PostProcessPass.init(config.resolution, post_config.effect.?);
+            self.post_passes.?[i] = if (post_config.effect) |effect|
+                postprocess.PostProcessPass.init(config.resolution, effect)
+            else
+                try postprocess.PostProcessPass.initCustom(allocator, config.resolution, post_config.source.?);
             self.post_pass_count += 1;
             self.post_passes.?[i].strength = post_config.strength;
         }
@@ -61,6 +72,7 @@ pub const PipelineRunner = struct {
 
     pub fn destroy(self: *PipelineRunner, allocator: Allocator) void {
         if (self.post_passes) |passes| {
+            for (passes[0..self.post_pass_count]) |*pass| pass.deinit(allocator);
             allocator.free(passes);
             self.post_passes = null;
             self.post_pass_count = 0;
@@ -95,7 +107,7 @@ pub const PipelineRunner = struct {
         }
 
         const post_passes = self.post_passes.?[0..self.post_pass_count];
-        const post_program = &(self.post_program.?);
+        const post_program: ?*postprocess.PostProcessProgram = if (self.post_program) |*program| program else null;
         const targets = self.render_targets.?[0..self.render_target_count];
 
         bindRenderTarget(&targets[0]);

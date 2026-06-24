@@ -9,7 +9,7 @@ papertoy --pipeline <file>
 A pipeline file currently defines a bounded linear render pipeline:
 
 - one base shader
-- zero to four ordered built-in post-process passes
+- zero to four ordered post-process passes
 - audio capture settings
 - unified time and visual modulation settings
 
@@ -52,6 +52,11 @@ kind = postprocess
 effect = impact_flash
 strength = 0.75
 
+[[passes]]
+kind = postprocess
+path = "audio-soft-vignette.post.glsl"
+strength = 0.85
+
 [audio]
 enabled = true
 capture = sink
@@ -75,6 +80,8 @@ Notes:
   may be written as bare identifiers or quoted strings.
 - this version requires exactly one `kind = base` pass
 - this version allows up to four ordered `kind = postprocess` passes
+- each postprocess pass defines either `effect` for a built-in pass or `path`
+  for a custom GLSL fragment shader, but not both
 - built-in postprocess effects are `pulse_zoom`, `glow_grade`, `heat_shift`,
   `impact_flash`, and `shock_ring`
 - `time_strength`, `visual_strength`, and postprocess `strength` must be
@@ -100,6 +107,42 @@ guidance from the CLI.
 `strength` scales the audio-reactive inputs for that pass. Effects are ordered:
 each postprocess pass samples the output of the previous pass. The CLI strength
 values are tuning hints, not hard validation limits.
+
+## Custom Postprocess Shaders
+
+Custom postprocess shader files are full GLSL 330 core fragment shaders. They
+sample the previous pass from `uInputTexture` using normalized coordinates and
+write `fragColor`.
+
+Available inputs:
+
+- `in vec2 vUv`
+- `uniform sampler2D uInputTexture`
+- `uniform vec2 uResolution`
+- `uniform vec4 uAudioBands`
+- `uniform vec4 uAudioState`
+- `uniform vec4 uAudioVisualizer`
+- `uniform float uTime`
+- `uniform float uStrength`
+
+Example:
+
+```glsl
+#version 330 core
+
+in vec2 vUv;
+out vec4 fragColor;
+
+uniform sampler2D uInputTexture;
+uniform vec4 uAudioVisualizer;
+uniform float uStrength;
+
+void main() {
+    vec3 color = texture(uInputTexture, vUv).rgb;
+    color += vec3(0.08, 0.04, 0.02) * uAudioVisualizer.x * uStrength;
+    fragColor = vec4(color, 1.0);
+}
+```
 
 ## CLI Interaction
 
@@ -132,6 +175,8 @@ The remaining top-level runtime controls still come from the CLI:
   gentler three-pass chain for daily desktop use
 - [desktop-audio-shock.example.toml](desktop-audio-shock.example.toml)
   showcases the more intense `shock_ring` effect
+- [desktop-audio-custom-post.example.toml](desktop-audio-custom-post.example.toml)
+  combines a built-in effect with a custom GLSL postprocess pass
 - [desktop-static.example.toml](desktop-static.example.toml)
 
 ## Current Limits

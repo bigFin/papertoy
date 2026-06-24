@@ -394,17 +394,16 @@ Implemented in this branch:
 - derived audio signals for impact, energy, drive, and brightness
 - direct shader mode mapped through the same `PipelineRunner`
 - TOML pipeline files
-- one base pass plus up to four ordered built-in postprocess passes
+- one base pass plus up to four ordered built-in or custom postprocess passes
 - ping-pong render targets for linear postprocess chaining
-- shared compiled postprocess shader program per output pipeline
+- shared built-in postprocess shader program plus per-pass custom programs
 - built-in effects: `pulse_zoom`, `glow_grade`, `heat_shift`,
   `impact_flash`, and `shock_ring`
 - per-effect metadata for CLI discovery and strength tuning guidance
 - example pipelines under `pipelines/`, including calmer and more intense
   audio-reactive presets
+- file-based custom GLSL postprocess passes
 
 Recommended next work:
 
-- decide whether file-based postprocess shaders belong in this branch or a
-  later branch
 - update screenshots or recordings once the branch is ready to publish

@@ -1473,6 +1473,26 @@ pub fn main() !u8 {
     };
     defer allocator.free(shader_source);
 
+    if (pipeline_file_config) |*config| {
+        for (config.postprocess_passes[0..config.post_count]) |*pass| {
+            const path = pass.path orelse continue;
+            pass.source = std.fs.cwd().readFileAlloc(allocator, path, max_shader_file_size) catch |err| switch (err) {
+                error.FileNotFound => {
+                    std.log.err("postprocess shader file not found: {s}", .{path});
+                    return 1;
+                },
+                error.FileTooBig => {
+                    std.log.err("postprocess shader file is too large: {s}", .{path});
+                    return 1;
+                },
+                else => |e| {
+                    std.log.err("failed to read postprocess shader file {s}: {}", .{ path, e });
+                    return 1;
+                },
+            };
+        }
+    }
+
     defer {
         for (global_output_configs.items) |output_config| {
             if (output_config.id) |id| allocator.free(id);
