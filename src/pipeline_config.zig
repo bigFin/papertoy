@@ -349,6 +349,7 @@ test "tracked example pipeline files parse" {
         "pipelines/desktop-audio-custom-post.example.toml",
         "pipelines/desktop-audio-liquid.example.toml",
         "pipelines/desktop-audio-prism-rift.example.toml",
+        "pipelines/desktop-audio-feedback-tunnel.example.toml",
     };
 
     for (example_paths) |pipeline_path| {

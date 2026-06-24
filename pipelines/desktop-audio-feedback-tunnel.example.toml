@@ -1,0 +1,30 @@
+[[passes]]
+kind = base
+path = "${PAPERTOY_DEFAULT_SHADER}"
+
+[[passes]]
+kind = postprocess
+effect = pulse_zoom
+strength = 0.50
+
+[[passes]]
+kind = postprocess
+path = "audio-feedback-tunnel.post.glsl"
+strength = 0.90
+
+[[passes]]
+kind = postprocess
+effect = glow_grade
+strength = 0.75
+
+[audio]
+enabled = true
+capture = sink
+target = "auto"
+
+[modulation]
+time_reactive = true
+time_strength = 1.65
+visual_reactive = true
+visual_strength = 0.85
+visual_style = drift
