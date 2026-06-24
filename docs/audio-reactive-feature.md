@@ -198,3 +198,5 @@ rebased independently:
 - explicit capture mode selection
 - pipeline files and built-in/custom postprocess effects
 - shared postprocess execution and linear postprocess chaining
+- custom GLSL postprocess presets for softer, liquid, and prism-style audio
+  reactions

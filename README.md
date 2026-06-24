@@ -80,8 +80,8 @@ $ PAPERTOY_DEFAULT_SHADER=/path/to/shader.glsl \
     papertoy --pipeline pipelines/desktop-audio-post.example.toml
 ```
 
-Additional pipeline examples include calmer, more intense, and custom GLSL
-postprocess presets under [pipelines](pipelines/).
+Additional pipeline examples include calmer, more intense, liquid, prism, and
+custom GLSL postprocess presets under [pipelines](pipelines/).
 
 ### Configuration Examples
 

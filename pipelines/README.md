@@ -177,6 +177,10 @@ The remaining top-level runtime controls still come from the CLI:
   showcases the more intense `shock_ring` effect
 - [desktop-audio-custom-post.example.toml](desktop-audio-custom-post.example.toml)
   combines a built-in effect with a custom GLSL postprocess pass
+- [desktop-audio-liquid.example.toml](desktop-audio-liquid.example.toml)
+  adds a custom orbital liquid-warp pass for smoother music-reactive motion
+- [desktop-audio-prism-rift.example.toml](desktop-audio-prism-rift.example.toml)
+  adds a custom folded prism pass for more aggressive chromatic movement
 - [desktop-static.example.toml](desktop-static.example.toml)
 
 ## Current Limits
