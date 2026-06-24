@@ -25,6 +25,6 @@ target = "auto"
 [modulation]
 time_reactive = true
 time_strength = 1.35
-visual_reactive = true
+visual_reactive = false
 visual_strength = 0.70
 visual_style = drift

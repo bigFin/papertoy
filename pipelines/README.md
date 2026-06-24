@@ -65,7 +65,7 @@ target = "auto"
 [modulation]
 time_reactive = true
 time_strength = 2.0
-visual_reactive = true
+visual_reactive = false
 visual_strength = 1.0
 visual_style = blend
 ```
@@ -86,6 +86,8 @@ Notes:
   `impact_flash`, and `shock_ring`
 - `time_strength`, `visual_strength`, and postprocess `strength` must be
   non-negative finite numbers
+- tracked presets keep `visual_reactive = false` so the base shader is not
+  pre-graded before postprocess passes run
 
 Compatibility:
 

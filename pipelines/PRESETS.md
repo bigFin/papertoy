@@ -11,7 +11,7 @@ papertoy --pipeline pipelines/desktop-audio-liquid.example.toml
 | Pipeline | Intensity | Feel | Good use |
 | --- | --- | --- | --- |
 | [desktop-static.example.toml](desktop-static.example.toml) | none | base shader only | non-audio wallpaper |
-| [desktop-audio.example.toml](desktop-audio.example.toml) | low | audio uniforms and modulation only | shader-authored audio reactions |
+| [desktop-audio.example.toml](desktop-audio.example.toml) | low | audio uniforms and time modulation only | shader-authored audio reactions |
 | [desktop-audio-soft.example.toml](desktop-audio-soft.example.toml) | low | gentle glow and heat | daily desktop use |
 | [desktop-audio-post.example.toml](desktop-audio-post.example.toml) | medium | built-in multi-pass polish | broad audio-reactive default |
 | [desktop-audio-custom-post.example.toml](desktop-audio-custom-post.example.toml) | medium | soft vignette and pulse | custom-pass sanity check |

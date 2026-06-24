@@ -9,11 +9,14 @@ level, bass, mid, treble, beat, impact, energy, drive, or brightness.
   that pass without changing the rest of the chain.
 - `time_strength`: changes how much the base shader's `iTime` motion speeds up
   with audio. Lower it if the original shader motion gets hard to read.
-- `visual_strength`: changes the generic visual wrapper applied to the base
-  shader. Lower it if the base shader becomes over-graded before postprocess
-  passes run.
-- `visual_style`: changes the base shader wrapper feel. `drift` is smoother,
-  `heat` is stronger and warmer, and `blend` is the safest default.
+- `visual_reactive`: tracked presets keep this off so the base shader is not
+  pre-graded before postprocess passes run. Enable it only when you explicitly
+  want the base shader wrapper to change color and contrast.
+- `visual_strength`: changes the generic visual wrapper when
+  `visual_reactive` is enabled.
+- `visual_style`: changes the base shader wrapper feel when `visual_reactive`
+  is enabled. `drift` is smoother, `heat` is stronger and warmer, and `blend`
+  is the safest default.
 
 ## Preset Notes
 

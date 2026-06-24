@@ -49,8 +49,8 @@ void main() {
     float tunnel = smoothstep(-0.20, 0.85, lane) * (1.0 - smoothstep(0.05, 0.80, radius));
     float flash = clamp(impact * 0.7 + beat * 0.45 + brightness * 0.25, 0.0, 1.35);
 
-    color = ((color - 0.5) * (1.0 + flash * 0.45 + mid * 0.16)) + 0.5;
-    color += vec3(0.03, 0.10, 0.22) * tunnel * (0.25 + energy) * uStrength;
-    color += vec3(0.18, 0.08, 0.02) * flash * (1.0 - smoothstep(0.15, 0.90, radius));
+    color = ((color - 0.5) * (1.0 + flash * 0.20 + mid * 0.08)) + 0.5;
+    color += vec3(0.015, 0.05, 0.11) * tunnel * energy * uStrength;
+    color += vec3(0.08, 0.035, 0.01) * flash * (1.0 - smoothstep(0.15, 0.90, radius));
     fragColor = vec4(max(color, vec3(0.0)), 1.0);
 }

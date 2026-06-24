@@ -47,8 +47,8 @@ void main() {
 
     float ring = 1.0 - smoothstep(0.018, 0.10, abs(radius - (0.22 + fract(uTime * 0.16 + impact * 0.18) * 0.55)));
     float flash = clamp(impact * 0.6 + beat * 0.5 + brightness * 0.25, 0.0, 1.4);
-    color = ((color - 0.5) * (1.0 + flash * 0.55 + mid * 0.18)) + 0.5;
-    color += vec3(0.20, 0.08, 0.32) * ring * flash * uStrength;
-    color += vec3(0.04, 0.10, 0.20) * energy * (1.0 - smoothstep(0.10, 0.92, radius));
+    color = ((color - 0.5) * (1.0 + flash * 0.25 + mid * 0.08)) + 0.5;
+    color += vec3(0.10, 0.04, 0.16) * ring * flash * uStrength;
+    color += vec3(0.02, 0.05, 0.10) * energy * (1.0 - smoothstep(0.10, 0.92, radius));
     fragColor = vec4(max(color, vec3(0.0)), 1.0);
 }

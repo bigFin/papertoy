@@ -43,8 +43,8 @@ void main() {
     color.b = texture(uInputTexture, clamp(uv - chroma, 0.0, 1.0)).b;
 
     float luma = dot(color, vec3(0.2126, 0.7152, 0.0722));
-    color = mix(vec3(luma), color, 1.05 + brightness * 0.45 + energy * 0.18);
-    color = ((color - 0.5) * (1.0 + impact * 0.35 + drive * 0.18)) + 0.5;
-    color += vec3(0.03, 0.08, 0.14) * energy * (1.0 - smoothstep(0.22, 0.90, radius));
+    color = mix(vec3(luma), color, 1.0 + brightness * 0.16 + energy * 0.08);
+    color = ((color - 0.5) * (1.0 + impact * 0.16 + drive * 0.08)) + 0.5;
+    color += vec3(0.015, 0.04, 0.07) * energy * (1.0 - smoothstep(0.22, 0.90, radius));
     fragColor = vec4(max(color, vec3(0.0)), 1.0);
 }
