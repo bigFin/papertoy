@@ -33,3 +33,5 @@ papertoy --pipeline pipelines/desktop-audio-feedback-tunnel.example.toml
 
 Add `--audio-overlay` while tuning to see the analyzer values that drive each
 pass.
+
+For per-preset tuning notes, see [TUNING.md](TUNING.md).

@@ -169,7 +169,8 @@ The remaining top-level runtime controls still come from the CLI:
 ## Examples
 
 See [PRESETS.md](PRESETS.md) for a compact preset catalog with intensity,
-visual feel, and quick commands.
+visual feel, and quick commands. See [TUNING.md](TUNING.md) for per-preset
+tuning notes.
 
 - [desktop-audio.example.toml](desktop-audio.example.toml)
 - [desktop-audio-post.example.toml](desktop-audio-post.example.toml) uses a
