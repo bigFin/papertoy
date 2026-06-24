@@ -855,12 +855,10 @@ fn handleArgsError(err: zig_args.Error) !void {
     try printUsage();
 }
 
-const NextFrameStrategy = union(enum) {
-    Vsync: *wl.Callback,
-    Custom: struct {
-        next_frame_time: u64,
-        expected_frame_time_ns: u64,
-    },
+const FramePacing = struct {
+    callback: *wl.Callback,
+    target_frame_interval_ns: ?u64 = null,
+    next_frame_time: u64 = 0,
 };
 
 const Paper = struct {
@@ -874,8 +872,8 @@ const Paper = struct {
     global_attributes: GlobalAttributes,
     /// Whether a new frame should be rendered. True when a frame callback is received (vsync).
     render_frame: bool = false,
-    /// The strategy used to determine when to render the next frame (Vsync or Custom).
-    next_frame_strategy: NextFrameStrategy,
+    /// Frame callback plus optional frame-rate cap for this surface.
+    frame_pacing: FramePacing,
 
     pub fn create(
         allocator: Allocator,
@@ -907,17 +905,11 @@ const Paper = struct {
         errdefer self.shader.destroy(allocator);
 
         self.render_frame = false;
-        if (target_frame_rate) |fps| {
-            self.next_frame_strategy = .{
-                .Custom = .{
-                    .next_frame_time = 0,
-                    .expected_frame_time_ns = @as(u64, std.time.ns_per_s) / fps,
-                },
-            };
-        } else {
-            self.next_frame_strategy = .{ .Vsync = try self.surface.requestAnimationFrame() };
-            self.next_frame_strategy.Vsync.setListener(*bool, setRenderFrame, &self.render_frame);
-        }
+        self.frame_pacing = .{
+            .callback = try self.surface.requestAnimationFrame(),
+            .target_frame_interval_ns = if (target_frame_rate) |fps| @as(u64, std.time.ns_per_s) / fps else null,
+        };
+        self.frame_pacing.callback.setListener(*bool, setRenderFrame, &self.render_frame);
 
         return self;
     }
@@ -926,9 +918,7 @@ const Paper = struct {
         self.surface.makeCurrent() catch {};
         self.shader.destroy(self.allocator);
         self.global_attributes.deinit();
-        if (self.next_frame_strategy == .Vsync) {
-            self.next_frame_strategy.Vsync.destroy();
-        }
+        self.frame_pacing.callback.destroy();
         self.surface.deinit();
         self.allocator.destroy(self);
     }
@@ -1127,29 +1117,27 @@ pub fn main() !u8 {
         const now = try std.time.Instant.now();
         const now_ns = now.since(std.mem.zeroes(std.time.Instant));
 
-        var smallest_custom_sleep_time: ?u64 = null;
+        var smallest_frame_cap_sleep_time: ?u64 = null;
         var rendered_count: usize = 0;
 
         for (papers.items) |paper| {
             var should_render_this_frame = false;
-            switch (paper.next_frame_strategy) {
-                .Vsync => {
-                    if (paper.shader.frame == 0 or paper.render_frame) {
+            if (paper.shader.frame == 0 or paper.render_frame) {
+                if (paper.frame_pacing.target_frame_interval_ns) |frame_interval_ns| {
+                    if (paper.shader.frame == 0 or now_ns >= paper.frame_pacing.next_frame_time) {
                         should_render_this_frame = true;
                         paper.render_frame = false;
-                    }
-                },
-                .Custom => |custom_strategy| {
-                    if (now_ns >= custom_strategy.next_frame_time) {
-                        should_render_this_frame = true;
-                        paper.next_frame_strategy.Custom.next_frame_time = now_ns + custom_strategy.expected_frame_time_ns;
+                        paper.frame_pacing.next_frame_time = now_ns + frame_interval_ns;
                     } else {
-                        const sleep_time = custom_strategy.next_frame_time - now_ns;
-                        if (smallest_custom_sleep_time == null or sleep_time < smallest_custom_sleep_time.?) {
-                            smallest_custom_sleep_time = sleep_time;
+                        const sleep_time = paper.frame_pacing.next_frame_time - now_ns;
+                        if (smallest_frame_cap_sleep_time == null or sleep_time < smallest_frame_cap_sleep_time.?) {
+                            smallest_frame_cap_sleep_time = sleep_time;
                         }
                     }
-                },
+                } else {
+                    should_render_this_frame = true;
+                    paper.render_frame = false;
+                }
             }
 
             if (!should_render_this_frame) continue;
@@ -1170,21 +1158,16 @@ pub fn main() !u8 {
             paper.global_attributes.bind();
             try paper.shader.render();
 
-            switch (paper.next_frame_strategy) {
-                .Vsync => {
-                    paper.next_frame_strategy.Vsync.destroy(); // Destroy previous callback
-                    paper.next_frame_strategy.Vsync = try paper.surface.requestAnimationFrame();
-                    paper.next_frame_strategy.Vsync.setListener(*bool, setRenderFrame, &paper.render_frame);
-                },
-                .Custom => {}, // Next frame time already updated
-            }
+            paper.frame_pacing.callback.destroy();
+            paper.frame_pacing.callback = try paper.surface.requestAnimationFrame();
+            paper.frame_pacing.callback.setListener(*bool, setRenderFrame, &paper.render_frame);
 
             try paper.surface.swapBuffers();
         }
 
         if (rendered_count == 0) {
-            // If nothing was rendered, wait for events or the next custom frame time.
-            if (smallest_custom_sleep_time) |sleep_time| {
+            // If nothing was rendered, wait for events or the next capped frame time.
+            if (smallest_frame_cap_sleep_time) |sleep_time| {
                 var fds = [_]std.posix.pollfd{.{
                     .fd = display.getFd(),
                     .events = std.posix.POLL.IN,
