@@ -234,8 +234,8 @@ pub const PostProcessProgram = struct {
         return initWithFragmentSource(allocator, POST_PROCESS_FRAGMENT_SOURCE, "built-in");
     }
 
-    pub fn initCustom(allocator: Allocator, source: []const u8) !PostProcessProgram {
-        return initWithFragmentSource(allocator, source, "custom");
+    pub fn initCustom(allocator: Allocator, source: []const u8, label: []const u8) !PostProcessProgram {
+        return initWithFragmentSource(allocator, source, label);
     }
 
     fn initWithFragmentSource(allocator: Allocator, source: []const u8, label: []const u8) !PostProcessProgram {
@@ -303,10 +303,10 @@ pub const PostProcessPass = struct {
         };
     }
 
-    pub fn initCustom(allocator: Allocator, resolution: shader.Resolution, source: []const u8) !PostProcessPass {
+    pub fn initCustom(allocator: Allocator, resolution: shader.Resolution, source: []const u8, label: []const u8) !PostProcessPass {
         return .{
             .resolution = resolution,
-            .custom_program = try PostProcessProgram.initCustom(allocator, source),
+            .custom_program = try PostProcessProgram.initCustom(allocator, source, label),
         };
     }
 

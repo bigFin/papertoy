@@ -62,7 +62,12 @@ pub const PipelineRunner = struct {
             self.post_passes.?[i] = if (post_config.effect) |effect|
                 postprocess.PostProcessPass.init(config.resolution, effect)
             else
-                try postprocess.PostProcessPass.initCustom(allocator, config.resolution, post_config.source.?);
+                try postprocess.PostProcessPass.initCustom(
+                    allocator,
+                    config.resolution,
+                    post_config.source.?,
+                    post_config.path orelse "custom",
+                );
             self.post_pass_count += 1;
             self.post_passes.?[i].strength = post_config.strength;
         }

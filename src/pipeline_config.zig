@@ -26,6 +26,7 @@ pub const PostProcessConfig = struct {
 pub const PassConfig = struct {
     kind: PassKind = .base,
     source: ?[]const u8 = null,
+    path: ?[]const u8 = null,
     effect: ?PostProcessEffect = null,
     strength: f32 = 1.0,
     time_modulation: shader.TimeModulation = .{},
@@ -87,6 +88,7 @@ pub const PipelineConfig = struct {
             passes[i + 1] = .{
                 .kind = .postprocess,
                 .effect = post_config.effect,
+                .path = post_config.path,
                 .source = post_config.source,
                 .strength = post_config.strength,
             };
@@ -160,6 +162,34 @@ test "PipelineConfig stores multiple postprocess passes inline" {
     try std.testing.expectEqual(.postprocess, config.passes[2].kind);
     try std.testing.expectEqual(PostProcessEffect.heat_shift, config.passes[2].effect.?);
     try std.testing.expectEqual(@as(f32, 1.25), config.passes[2].strength);
+}
+
+test "PipelineConfig stores custom postprocess source and path inline" {
+    const source = "void mainImage(out vec4 fragColor, in vec2 fragCoord) { fragColor = vec4(fragCoord, 0.0, 1.0); }";
+    const postprocess_source =
+        \\#version 330 core
+        \\in vec2 vUv;
+        \\out vec4 fragColor;
+        \\uniform sampler2D uInputTexture;
+        \\void main() { fragColor = texture(uInputTexture, vUv); }
+    ;
+    const postprocess_path = "/tmp/custom-post.glsl";
+    const resolution: shader.Resolution = .{ .width = 64, .height = 32 };
+    const postprocess_passes = [_]PostProcessConfig{
+        .{
+            .path = postprocess_path,
+            .source = postprocess_source,
+            .strength = 0.8,
+        },
+    };
+    const config = try PipelineConfig.withPostprocessPasses(source, resolution, 60, .{}, .{}, &postprocess_passes);
+
+    try std.testing.expectEqual(@as(usize, 2), config.pass_count);
+    try std.testing.expectEqual(.postprocess, config.passes[1].kind);
+    try std.testing.expectEqual(@as(?PostProcessEffect, null), config.passes[1].effect);
+    try std.testing.expectEqualStrings(postprocess_path, config.passes[1].path.?);
+    try std.testing.expectEqualStrings(postprocess_source, config.passes[1].source.?);
+    try std.testing.expectEqual(@as(f32, 0.8), config.passes[1].strength);
 }
 
 test "PipelineConfig rejects invalid pass counts" {
