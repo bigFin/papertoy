@@ -72,6 +72,7 @@ Audio-reactive shader uniforms and pipeline files are documented separately:
 
 - [Audio-reactive feature notes](docs/audio-reactive-feature.md)
 - [Pipeline files](pipelines/README.md)
+- [Pipeline presets](pipelines/PRESETS.md)
 
 The tracked pipeline examples include audio-reactive postprocess chains:
 

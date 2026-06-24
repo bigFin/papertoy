@@ -168,12 +168,8 @@ The remaining top-level runtime controls still come from the CLI:
 
 ## Examples
 
-| Pipeline | Intensity | Feel | Good use |
-| --- | --- | --- | --- |
-| [desktop-audio-soft.example.toml](desktop-audio-soft.example.toml) | low | gentle glow and heat | daily desktop use |
-| [desktop-audio-liquid.example.toml](desktop-audio-liquid.example.toml) | medium | orbital liquid warp | smoother music-reactive motion |
-| [desktop-audio-prism-rift.example.toml](desktop-audio-prism-rift.example.toml) | high | folded prism and chromatic split | aggressive visualizer moments |
-| [desktop-audio-feedback-tunnel.example.toml](desktop-audio-feedback-tunnel.example.toml) | high | recursive-looking zoom tunnel | trippy bass-forward tracks |
+See [PRESETS.md](PRESETS.md) for a compact preset catalog with intensity,
+visual feel, and quick commands.
 
 - [desktop-audio.example.toml](desktop-audio.example.toml)
 - [desktop-audio-post.example.toml](desktop-audio-post.example.toml) uses a
@@ -190,6 +186,8 @@ The remaining top-level runtime controls still come from the CLI:
   adds a custom folded prism pass for more aggressive chromatic movement
 - [desktop-audio-feedback-tunnel.example.toml](desktop-audio-feedback-tunnel.example.toml)
   adds a recursive-looking multi-sample zoom tunnel
+- [desktop-audio-deep-space.example.toml](desktop-audio-deep-space.example.toml)
+  composes the tunnel and liquid custom passes for a spacious preset
 - [desktop-static.example.toml](desktop-static.example.toml)
 
 ## Current Limits
