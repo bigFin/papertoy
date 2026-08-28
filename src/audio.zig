@@ -545,6 +545,9 @@ pub const AudioAnalyzer = struct {
 
         var analyzer: AnalyzerState = .{};
         var buffer: [4096]u8 = undefined;
+        var framed_buffer: [4099]u8 = undefined;
+        var carry: [3]u8 = undefined;
+        var carry_len: usize = 0;
 
         while (true) {
             const bytes_read = stdout.read(&buffer) catch |err| {
@@ -553,7 +556,18 @@ pub const AudioAnalyzer = struct {
             };
             if (bytes_read == 0) return;
 
-            analyzer.update(shared, buffer[0..bytes_read]);
+            const input = if (carry_len == 0) blk: {
+                break :blk buffer[0..bytes_read];
+            } else blk: {
+                @memcpy(framed_buffer[0..carry_len], carry[0..carry_len]);
+                @memcpy(framed_buffer[carry_len .. carry_len + bytes_read], buffer[0..bytes_read]);
+                break :blk framed_buffer[0 .. carry_len + bytes_read];
+            };
+            carry_len = input.len % 4;
+            if (carry_len != 0) {
+                @memcpy(carry[0..carry_len], input[input.len - carry_len ..]);
+            }
+            analyzer.update(shared, input[0 .. input.len - carry_len]);
         }
     }
 };
