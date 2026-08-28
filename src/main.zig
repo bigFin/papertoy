@@ -475,7 +475,7 @@ const WlrSurface = struct {
     closed: bool = false,
 
     /// Create a wlroots surface with EGL for GPU rendering.
-    pub fn createEgl(allocator: Allocator, gl_display: *GLDisplay, compositor: *wl.Compositor, layer_shell: *zwlr.LayerShellV1, fractional_scale_manager: ?*wp.FractionalScaleManagerV1, viewporter: ?*wp.Viewporter, output: *Output, custom_resolution: ?Resolution) !*WlrSurface {
+    pub fn createEgl(allocator: Allocator, gl_display: *GLDisplay, compositor: *wl.Compositor, layer_shell: *zwlr.LayerShellV1, fractional_scale_manager: ?*wp.FractionalScaleManagerV1, viewporter: ?*wp.Viewporter, output: *Output, custom_resolution: ?Resolution, layer: Layer) !*WlrSurface {
         const self = try allocator.create(WlrSurface);
         errdefer allocator.destroy(self);
 
@@ -504,6 +504,10 @@ const WlrSurface = struct {
         self.scale = output.scale; // Initial scale guess, will be refined in handleConfiguration or by fractional scale
 
         self.wl_surface = try compositor.createSurface();
+        const input_region = try compositor.createRegion();
+        defer input_region.destroy();
+        self.wl_surface.setInputRegion(input_region);
+
         errdefer self.wl_surface.destroy();
 
         self.wl_egl_window = try wl.EglWindow.create(self.wl_surface, @intCast(self.width), @intCast(self.height));
@@ -522,7 +526,8 @@ const WlrSurface = struct {
         };
         errdefer _ = egl.eglDestroySurface(self.gl_display.egl_display, self.egl_surface);
 
-        self.wlr_surface = try layer_shell.getLayerSurface(self.wl_surface, output.output, .background, "papertoy");
+        self.wlr_surface = try layer_shell.getLayerSurface(self.wl_surface, output.output, layer.toWlr(), "papertoy");
+
         errdefer self.wlr_surface.destroy();
 
         self.wlr_surface.setListener(*WlrSurface, listener, self);
@@ -881,11 +886,29 @@ test "computeSurfaceConfiguration lets custom resolution override compositor siz
     try std.testing.expectEqual(@as(i32, 1), configured.buffer_scale);
 }
 
+const Layer = enum {
+    background,
+    bottom,
+    top,
+    overlay,
+
+    pub fn toWlr(self: Layer) zwlr.LayerShellV1.Layer {
+        return switch (self) {
+            .background => .background,
+            .bottom => .bottom,
+            .top => .top,
+            .overlay => .overlay,
+        };
+    }
+};
+
 const OutputConfig = struct {
     id: ?[]const u8 = null,
     resolution: ?Resolution = null,
     frame_rate: ?u32 = null,
+    layer: Layer = .background,
 };
+
 
 // Global storage for output configurations parsed from CLI
 var global_output_configs = std.ArrayListUnmanaged(OutputConfig){};
@@ -974,6 +997,9 @@ fn parseOutputConfigString(allocator: Allocator, s: []const u8) !OutputConfig {
                 error.Overflow => return error.FrameRateOverflow,
             };
             if (config.frame_rate.? == 0) return error.FrameRateMustBePositive;
+        } else if (std.mem.eql(u8, key, "layer")) {
+            config.layer = std.meta.stringToEnum(Layer, value) orelse return error.UnknownLayer;
+
         } else {
             return error.UnknownOutputConfigKey;
         }
@@ -1088,9 +1114,10 @@ pub fn printUsage() !void {
         \\Options:
         \\  --pipeline <file> Use a TOML pipeline file instead of a direct shader path
         \\  --output <config>  Configure individual outputs. Can be specified multiple times.
-        \\                     Format: "id=<name>[,resolution=<WxH>][,frame-rate=<fps>]"
+        \\                     Format: "id=<name>[,resolution=<WxH>][,frame-rate=<fps>][,layer=<layer>]"
         \\                     Compatibility shorthand: --output <name>
-        \\                     Example: --output "id=DP-1,resolution=1920x1080,frame-rate=60"
+        \\                     Layers: background, bottom, top, overlay (default: background)
+        \\                     Example: --output "id=DP-1,frame-rate=60,layer=overlay"
         \\                     If not specified, renders on all available outputs.
         \\  --frame-rate <fps> Set a default frame rate for selected outputs (default: native)
         \\  --resolution <WxH> Set a default positive logical resolution for selected outputs
@@ -1245,7 +1272,10 @@ const Paper = struct {
         time_modulation: TimeModulation,
         visual_modulation: VisualModulation,
         postprocess_passes: []const PostProcessConfig,
+        layer: Layer,
     ) !*Paper {
+
+
         const self = try allocator.create(Paper);
         errdefer allocator.destroy(self);
 
@@ -1253,7 +1283,8 @@ const Paper = struct {
         output.retain();
         errdefer output.release();
 
-        self.surface = try WlrSurface.createEgl(allocator, gl_display, compositor, layer_shell, fractional_scale_manager, viewporter, output, custom_resolution);
+        self.surface = try WlrSurface.createEgl(allocator, gl_display, compositor, layer_shell, fractional_scale_manager, viewporter, output, custom_resolution, layer);
+
         errdefer self.surface.deinit();
 
         try self.surface.makeCurrent();
@@ -1624,6 +1655,7 @@ pub fn main() !u8 {
             effective_time_modulation,
             effective_visual_modulation,
             effective_postprocess_passes,
+            output_config.layer,
         );
         try papers.append(allocator, paper);
         if (output_config.frame_rate) |fps| {
