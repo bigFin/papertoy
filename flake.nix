@@ -23,11 +23,11 @@
   }: let
     flake-utils = zig2nix.inputs.flake-utils;
   in (flake-utils.lib.eachDefaultSystem (system: let
-    pkgs = nixpkgs.legacyPackages.${system};
 
     env = zig2nix.outputs.zig-env.${system} {
       zig = zig2nix.outputs.packages.${system}.zig-0_15_2;
     };
+    pkgs = env.pkgs;
 
     # Deps that need to be present when we run 'zig build'
     zigBuildDeps = with env.pkgs; [
