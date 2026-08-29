@@ -79,6 +79,7 @@
       apps.bundle = {
         type = "app";
         program = "${packages.foreign}/bin/papertoy";
+        meta.description = "Run a Shadertoy-compatible shader as an animated wallpaper on Wayland";
       };
 
       # nix run .#build
