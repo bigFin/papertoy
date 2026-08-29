@@ -18,7 +18,7 @@ pub const PipelineRunner = struct {
     render_targets: ?[]postprocess.RenderTarget = null,
     render_target_count: usize = 0,
 
-    pub fn create(allocator: Allocator, config: PipelineConfig) !PipelineRunner {
+    pub fn create(allocator: Allocator, config: PipelineConfig, opacity: f32) !PipelineRunner {
         const passes = try config.activePasses();
 
         const base_config = passes[0];
@@ -29,6 +29,7 @@ pub const PipelineRunner = struct {
                 base_config.source orelse return error.InvalidPipelineValue,
                 config.resolution,
                 config.frame_rate,
+                opacity,
                 base_config.time_modulation,
                 base_config.visual_modulation,
             ),

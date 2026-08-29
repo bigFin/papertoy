@@ -101,12 +101,14 @@ const SHADERTOY_POSTAMBLE =
     \\    }
     \\}
     \\
+    \\uniform float uPapertoyOpacity;
+    \\
     \\void main() {
     \\    vec2 papertoyFragCoord = papertoyWarpAudioCoords(gl_FragCoord.xy);
     \\    vec4 papertoyColor = vec4(0.0);
     \\    papertoyUserMainImage(papertoyColor, papertoyFragCoord);
     \\    papertoyColor.rgb = papertoyApplyAudioVisuals(papertoyColor.rgb, gl_FragCoord.xy);
-    \\    _fragColor = papertoyColor;
+    \\    _fragColor = vec4(papertoyColor.rgb, clamp(papertoyColor.a * uPapertoyOpacity, 0.0, 1.0));
     \\}
 ;
 
@@ -230,6 +232,10 @@ pub const Shader = struct {
     resolution: Resolution,
     /// The frame rate the shader is expected to run at.
     frame_rate: u32,
+    /// The configured surface opacity.
+    opacity: f32,
+    /// The uniform location for the configured surface opacity.
+    opacity_uniform: ?u32,
     /// The current frame number. Increments by one each time the shader is rendered.
     frame: u32 = 0,
     /// The first time the shader was rendered.
@@ -251,7 +257,7 @@ pub const Shader = struct {
     };
 
     /// Create the shader program with the given source code and parameters.
-    pub fn create(allocator: Allocator, source: []const u8, resolution: Resolution, frame_rate: u32, time_modulation: TimeModulation, visual_modulation: VisualModulation) Error!*Shader {
+    pub fn create(allocator: Allocator, source: []const u8, resolution: Resolution, frame_rate: u32, opacity: f32, time_modulation: TimeModulation, visual_modulation: VisualModulation) Error!*Shader {
         const vert = gl.Shader.create(.vertex);
         defer vert.delete();
         vert.source(1, &.{VERTEX_SHADER_SOURCE[0..]});
@@ -311,6 +317,8 @@ pub const Shader = struct {
             }),
             .resolution = resolution,
             .frame_rate = frame_rate,
+            .opacity = opacity,
+            .opacity_uniform = program.uniformLocation("uPapertoyOpacity"),
             .time_modulation = time_modulation,
             .visual_modulation = visual_modulation,
         };
@@ -328,6 +336,7 @@ pub const Shader = struct {
     /// Render the shader to the currently bound framebuffer.
     pub fn render(self: *Shader, snapshot: AudioSnapshot) !void {
         self.program.use();
+        gl.uniform1f(self.opacity_uniform, self.opacity);
 
         if (self.frame == 0) {
             self.first_rendered = try std.time.Instant.now();

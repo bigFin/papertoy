@@ -927,6 +927,7 @@ const Options = struct {
     output: OutputConfigCLI = .{}, // Dummy field to trigger parsing
     @"frame-rate": ?u32 = null,
     resolution: ?[]const u8 = null,
+    opacity: ?f32 = null,
     @"audio-reactive": bool = false,
     @"audio-target": ?[]const u8 = null,
     @"audio-capture": ?[]const u8 = null,
@@ -1118,8 +1119,10 @@ pub fn printUsage() !void {
         \\                     Example: --output "id=DP-1,frame-rate=60,layer=overlay"
         \\                     If not specified, renders on all available outputs.
         \\  --frame-rate <fps> Set a default frame rate for selected outputs (default: native)
+        \\  --opacity <f>       Multiply final shader alpha by this value (0.0-1.0, default: 1.0)
         \\  --resolution <WxH> Set a default positive logical resolution for selected outputs
         \\  --audio-reactive   Enable audio-reactive shader inputs from PipeWire
+        \\
         \\  --audio-capture <mode> Capture mode: sink (default) or source
         \\  --audio-target <n> Set the PipeWire capture target node name or serial
         \\  --audio-time-reactive  Modulate iTime using audio energy for unmodified shaders
@@ -1265,6 +1268,7 @@ const Paper = struct {
         viewporter: ?*wp.Viewporter,
         output: *Output,
         custom_resolution: ?Resolution,
+        opacity: f32,
         shader_source: []const u8,
         target_frame_rate: ?u32,
         time_modulation: TimeModulation,
@@ -1296,7 +1300,8 @@ const Paper = struct {
             time_modulation,
             visual_modulation,
             postprocess_passes,
-        ));
+        ), opacity);
+
         errdefer self.pipeline.destroy(allocator);
 
         self.render_frame = false;
@@ -1424,6 +1429,11 @@ pub fn main() !u8 {
         }
         break :frame_rate frame_rate;
     } else null;
+    const opacity = options.options.opacity orelse 1.0;
+    if (!isValidOpacity(opacity)) {
+        std.log.err("opacity must be a finite value between 0 and 1, got {d}", .{opacity});
+        return 1;
+    }
 
     // TODO: Investigate all try uses below and make them return a user-friendly error.
 
@@ -1646,6 +1656,7 @@ pub fn main() !u8 {
             registry_listener.viewporter_v1,
             output,
             target_resolution,
+            opacity,
             shader_source,
             output_config.frame_rate,
             effective_time_modulation,
@@ -1776,6 +1787,19 @@ fn setRenderFrame(callback: *wl.Callback, event: wl.Callback.Event, render_frame
 
 fn isNonNegativeFinite(value: f32) bool {
     return std.math.isFinite(value) and value >= 0.0;
+}
+fn isValidOpacity(value: f32) bool {
+    return std.math.isFinite(value) and value >= 0.0 and value <= 1.0;
+}
+
+test "isValidOpacity accepts unit interval and rejects outside values" {
+    try std.testing.expect(isValidOpacity(0.0));
+    try std.testing.expect(isValidOpacity(0.35));
+    try std.testing.expect(isValidOpacity(1.0));
+    try std.testing.expect(!isValidOpacity(-0.1));
+    try std.testing.expect(!isValidOpacity(1.1));
+    try std.testing.expect(!isValidOpacity(std.math.nan(f32)));
+    try std.testing.expect(!isValidOpacity(std.math.inf(f32)));
 }
 
 test "isNonNegativeFinite rejects negative and non-finite values" {

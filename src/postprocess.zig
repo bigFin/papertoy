@@ -204,16 +204,17 @@ const POST_PROCESS_FRAGMENT_SOURCE =
     \\}
     \\
     \\void main() {
+    \\    float alpha = texture(uInputTexture, vUv).a;
     \\    if (uEffect == 0) {
-    \\        fragColor = vec4(applyPulseZoom(vUv), 1.0);
+    \\        fragColor = vec4(applyPulseZoom(vUv), alpha);
     \\    } else if (uEffect == 1) {
-    \\        fragColor = vec4(applyGlowGrade(vUv), 1.0);
+    \\        fragColor = vec4(applyGlowGrade(vUv), alpha);
     \\    } else if (uEffect == 2) {
-    \\        fragColor = vec4(applyHeatShift(vUv), 1.0);
+    \\        fragColor = vec4(applyHeatShift(vUv), alpha);
     \\    } else if (uEffect == 3) {
-    \\        fragColor = vec4(applyImpactFlash(vUv), 1.0);
+    \\        fragColor = vec4(applyImpactFlash(vUv), alpha);
     \\    } else if (uEffect == 4) {
-    \\        fragColor = vec4(applyShockRing(vUv), 1.0);
+    \\        fragColor = vec4(applyShockRing(vUv), alpha);
     \\    } else {
     \\        fragColor = texture(uInputTexture, vUv);
     \\    }

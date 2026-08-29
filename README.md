@@ -49,7 +49,7 @@ $ zig-out/bin/papertoy /path/to/shader.glsl
 
 - `--output <config>`: Configure individual outputs. Can be specified multiple times.
 
-  **Format:** `id=<name>[,resolution=<WxH>][,frame-rate=<fps>]`
+  **Format:** `id=<name>[,resolution=<WxH>][,frame-rate=<fps>][,layer=<layer>]`
 
   For compatibility with older versions, `--output <name>` is also accepted as shorthand for `--output "id=<name>"`.
 
@@ -57,6 +57,9 @@ $ zig-out/bin/papertoy /path/to/shader.glsl
   - `id`: The name of the output (e.g., `DP-1`, `HDMI-A-1`). Run `swaymsg -t get_outputs` or similar to find yours.
   - `resolution`: Force a specific positive logical resolution (e.g., `1920x1080`).
   - `frame-rate`: Limit the frame rate (e.g., `30`, `60`). Defaults to compositor frame callbacks.
+  - `layer`: Set the layer-shell level: `background`, `bottom`, `top`, or `overlay`. Defaults to `background`.
+
+- `--opacity <f>`: Multiply the final shader alpha by a finite value from `0.0` (fully transparent) to `1.0` (opaque). Defaults to `1.0`.
 
 - `--frame-rate <fps>`: Set the default frame rate for selected outputs. Per-output `frame-rate` values override this.
 - `--resolution <WxH>`: Set the default positive logical resolution for selected outputs. Per-output `resolution` values override this.
