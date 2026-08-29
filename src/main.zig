@@ -909,7 +909,6 @@ const OutputConfig = struct {
     layer: Layer = .background,
 };
 
-
 // Global storage for output configurations parsed from CLI
 var global_output_configs = std.ArrayListUnmanaged(OutputConfig){};
 
@@ -999,7 +998,6 @@ fn parseOutputConfigString(allocator: Allocator, s: []const u8) !OutputConfig {
             if (config.frame_rate.? == 0) return error.FrameRateMustBePositive;
         } else if (std.mem.eql(u8, key, "layer")) {
             config.layer = std.meta.stringToEnum(Layer, value) orelse return error.UnknownLayer;
-
         } else {
             return error.UnknownOutputConfigKey;
         }
@@ -1274,8 +1272,6 @@ const Paper = struct {
         postprocess_passes: []const PostProcessConfig,
         layer: Layer,
     ) !*Paper {
-
-
         const self = try allocator.create(Paper);
         errdefer allocator.destroy(self);
 

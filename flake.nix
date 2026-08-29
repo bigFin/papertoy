@@ -23,7 +23,6 @@
   }: let
     flake-utils = zig2nix.inputs.flake-utils;
   in (flake-utils.lib.eachDefaultSystem (system: let
-
     env = zig2nix.outputs.zig-env.${system} {
       zig = zig2nix.outputs.packages.${system}.zig-0_15_2;
     };
