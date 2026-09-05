@@ -333,7 +333,9 @@ const WlrSurface = struct {
     /// The OpenGL context for this surface.
     gl_context: GLContext,
     /// The EGL surface created for the window.
-    egl_surface: egl.EGLSurface, // --- State ---
+    egl_surface: egl.EGLSurface,
+
+    // --- State ---
     /// The current width of the surface.
     width: u32 = undefined,
     /// The current height of the surface.
@@ -427,7 +429,7 @@ const WlrSurface = struct {
         // We want to ignore any exclusive zones set by other surfaces.
         self.wlr_surface.setExclusiveZone(-1);
         self.wlr_surface.setSize(self.destination_width, self.destination_height);
-        if (fractional_scale_manager) |_| {
+        if (fractional_scale_manager != null) {
             self.wl_surface.setBufferScale(1);
         } else {
             self.wl_surface.setBufferScale(@intCast(self.scale));
@@ -1070,7 +1072,7 @@ pub fn main() !u8 {
             return 1;
         };
 
-        const target_resolution = if (output_config.resolution) |res| res else null;
+        const target_resolution = output_config.resolution;
 
         const paper = try Paper.create(
             allocator,
@@ -1147,9 +1149,7 @@ pub fn main() !u8 {
 
             try paper.surface.makeCurrent();
 
-            if (try paper.surface.handleConfiguration()) {
-                // Resolution changed
-            }
+            _ = try paper.surface.handleConfiguration();
             // Update viewport and resolution uniforms every frame because each output may have
             // a different configured size.
             paper.shader.resolution = .{ .width = paper.surface.width, .height = paper.surface.height };

@@ -54,7 +54,7 @@ $ zig-out/bin/papertoy /path/to/shader.glsl
   For compatibility with older versions, `--output <name>` is also accepted as shorthand for `--output "id=<name>"`.
 
   **Parameters:**
-  - `id`: The name of the output (e.g., `DP-1`, `HDMI-A-1`). Run `swaymsg -t get_outputs` or similar to find yours.
+  - `id`: The name of the output (e.g., `DP-1`, `HDMI-A-1`). Use your compositor's output list command to find yours (e.g., `niri msg outputs`, `swaymsg -t get_outputs`, `hyprctl monitors`).
   - `resolution`: Force a specific positive logical resolution (e.g., `1920x1080`).
   - `frame-rate`: Limit the frame rate (e.g., `30`, `60`). Defaults to compositor frame callbacks.
 
