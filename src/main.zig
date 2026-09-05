@@ -971,6 +971,7 @@ fn parseOutputConfigString(allocator: Allocator, s: []const u8) !OutputConfig {
     }
 
     var config: OutputConfig = .{};
+    var seen_layer = false;
     errdefer if (config.id) |id| allocator.free(id);
 
     var it = std.mem.splitScalar(u8, trimmed, ',');
@@ -998,6 +999,8 @@ fn parseOutputConfigString(allocator: Allocator, s: []const u8) !OutputConfig {
             };
             if (config.frame_rate.? == 0) return error.FrameRateMustBePositive;
         } else if (std.mem.eql(u8, key, "layer")) {
+            if (seen_layer) return error.DuplicateLayer;
+            seen_layer = true;
             config.layer = std.meta.stringToEnum(Layer, value) orelse return error.UnknownLayer;
         } else {
             return error.UnknownOutputConfigKey;
@@ -1052,6 +1055,21 @@ test "parseOutputConfigString accepts explicit config and legacy output shorthan
     try std.testing.expectEqualStrings("HDMI-A-1", shorthand.id.?);
     try std.testing.expectEqual(@as(?Resolution, null), shorthand.resolution);
     try std.testing.expectEqual(@as(?u32, null), shorthand.frame_rate);
+}
+
+test "parseOutputConfigString accepts and validates layer" {
+    const allocator = std.testing.allocator;
+
+    const with_layer = try parseOutputConfigString(allocator, "id=DP-1,layer=overlay");
+    defer allocator.free(with_layer.id.?);
+    try std.testing.expectEqual(Layer.overlay, with_layer.layer);
+
+    const def = try parseOutputConfigString(allocator, "id=DP-1");
+    defer allocator.free(def.id.?);
+    try std.testing.expectEqual(Layer.background, def.layer);
+
+    try std.testing.expectError(error.DuplicateLayer, parseOutputConfigString(allocator, "id=DP-1,layer=top,layer=overlay"));
+    try std.testing.expectError(error.UnknownLayer, parseOutputConfigString(allocator, "id=DP-1,layer=sideways"));
 }
 
 test "parseOutputConfigString rejects ambiguous and duplicate fields" {
@@ -1195,19 +1213,20 @@ fn logOutputConfigArgsError(err: zig_args.Error) bool {
 
 fn outputConfigErrorMessage(err: anyerror) []const u8 {
     return switch (err) {
+        error.InvalidOutputConfig => "use --output <name> or --output \"id=<name>[,resolution=<WxH>][,frame-rate=<fps>][,layer=<layer>]\"",
         error.OutputIdRequired => "expected an output name or id=<name>",
-        error.InvalidOutputConfig => "use --output <name> or --output \"id=<name>[,resolution=<WxH>][,frame-rate=<fps>]\"",
+        error.DuplicateFrameRate => "frame-rate was specified more than once",
+        error.DuplicateLayer => "layer was specified more than once",
         error.DuplicateOutputId => "id was specified more than once",
         error.DuplicateResolution => "resolution was specified more than once",
-        error.DuplicateFrameRate => "frame-rate was specified more than once",
         error.InvalidResolutionFormat => "resolution must be in WxH form",
         error.InvalidResolutionValue => "resolution width and height must be integers",
         error.ResolutionOverflow => "resolution is too large",
         error.ResolutionMustBePositive => "resolution width and height must be positive",
-        error.InvalidFrameRateValue => "frame-rate must be an integer",
+        error.UnknownOutputConfigKey => "supported keys are id, resolution, frame-rate, and layer",
+        error.UnknownLayer => "layer must be one of: background, bottom, top, overlay",
         error.FrameRateOverflow => "frame-rate is too large",
         error.FrameRateMustBePositive => "frame-rate must be positive",
-        error.UnknownOutputConfigKey => "supported keys are id, resolution, and frame-rate",
         else => "failed to parse output configuration",
     };
 }
