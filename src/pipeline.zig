@@ -79,21 +79,20 @@ pub const PipelineRunner = struct {
     pub fn destroy(self: *PipelineRunner, allocator: Allocator) void {
         if (self.post_passes) |passes| {
             for (passes[0..self.post_pass_count]) |*pass| pass.deinit(allocator);
-            allocator.free(passes);
-            self.post_passes = null;
-            self.post_pass_count = 0;
         }
-        if (self.post_program) |*program| {
-            program.deinit(allocator);
-            self.post_program = null;
-        }
+        if (self.post_program) |*program| program.deinit(allocator);
         if (self.render_targets) |targets| {
             for (targets[0..self.render_target_count]) |*target| target.deinit();
-            allocator.free(targets);
-            self.render_targets = null;
-            self.render_target_count = 0;
         }
-        self.base_pass.destroy(allocator);
+        self.base_pass.deinit();
+        self.freeStorage(allocator);
+    }
+
+    /// No GL calls: destroying this paper's unshared context releases its GL objects.
+    pub fn freeStorage(self: *PipelineRunner, allocator: Allocator) void {
+        if (self.post_passes) |passes| allocator.free(passes);
+        if (self.render_targets) |targets| allocator.free(targets);
+        allocator.destroy(self.base_pass);
     }
 
     pub fn resize(self: *PipelineRunner, resolution: shader.Resolution) !void {

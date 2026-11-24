@@ -70,10 +70,10 @@ const Output = struct {
     id: u32,
     /// Whether the compositor has removed this output global.
     removed: bool = false,
-    /// The number of active wallpapers using this output.
-    active_papers: usize = 0,
+    /// Try at most once per global, even if the compositor closes its layer.
+    wallpaper_attempted: bool = false,
     invalid_metadata: bool = false,
-    invalid_geometry: bool = false,
+    invalid_geometry: bool = true, // Wait for the first valid mode.
     invalid_scale: bool = false,
     /// The name of the output. Set by the `name` event.
     name: ?[]const u8 = null,
@@ -122,15 +122,6 @@ const Output = struct {
         if (self.name) |n| self.allocator.free(n);
         if (self.description) |description| self.allocator.free(description);
         self.allocator.destroy(self);
-    }
-
-    pub fn retain(self: *Output) void {
-        self.active_papers += 1;
-    }
-
-    pub fn release(self: *Output) void {
-        std.debug.assert(self.active_papers > 0);
-        self.active_papers -= 1;
     }
 
     fn isInvalid(self: *const Output) bool {
@@ -205,22 +196,11 @@ const Output = struct {
             },
         }
     }
-
-    /// Roundtrip the display until this output is ready.
-    pub fn wait(self: *Output, display: *wl.Display) !void {
-        while (!self.ready) {
-            if (self.isInvalid()) return error.InvalidOutput;
-            if (display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
-        }
-    }
 };
 
 /// A registry listener. This is used to listen for and instantiate global objects.
 const RegistryListener = struct {
     allocator: Allocator,
-
-    /// The Wayland display object. This is used to perform roundtrips.
-    display: *wl.Display,
 
     // Protocol objects
     compositor: ?*wl.Compositor,
@@ -272,7 +252,12 @@ const RegistryListener = struct {
                 }
             },
             .global_remove => |global_remove| {
-                _ = self.removeOutput(global_remove.name);
+                for (self.outputs.items) |output| {
+                    if (output.global_name == global_remove.name) {
+                        output.removed = true;
+                        break;
+                    }
+                }
             },
         }
     }
@@ -284,31 +269,15 @@ const RegistryListener = struct {
         };
         errdefer output.destroy();
 
-        try output.wait(self.display);
         try self.outputs.append(self.allocator, output);
     }
 
-    fn removeOutput(self: *RegistryListener, global_name: u32) bool {
-        for (self.outputs.items, 0..) |item, i| {
-            if (item.global_name == global_name) {
-                item.removed = true;
-                if (item.active_papers != 0) {
-                    std.log.info("output {s} was removed; waiting for {} active wallpaper(s) to stop", .{ item.name orelse "unknown", item.active_papers });
-                    return true;
-                }
-                item.destroy();
-                _ = self.outputs.orderedRemove(i);
-                return true;
-            }
-        }
-        return false;
-    }
-
+    /// Run only after papers referencing these records have been destroyed.
     fn pruneRemovedOutputs(self: *RegistryListener) void {
         var i: usize = 0;
         while (i < self.outputs.items.len) {
             const output = self.outputs.items[i];
-            if (!output.removed or output.active_papers != 0) {
+            if (!output.removed) {
                 i += 1;
                 continue;
             }
@@ -401,7 +370,7 @@ const GLContext = struct {
                 egl.EGL_CONTEXT_MINOR_VERSION, 3,
             };
 
-            break :egl_context egl.eglCreateContext(gl_display.egl_display, gl_display.egl_config, egl.EGL_NO_CONTEXT, &config_attributes) orelse switch (egl.eglGetError()) {
+            break :egl_context egl.eglCreateContext(gl_display.egl_display, gl_display.egl_config, egl.EGL_NO_CONTEXT, &config_attributes) orelse switch (try outputEglError()) {
                 egl.EGL_BAD_ATTRIBUTE => return error.InvalidContextAttribute,
                 egl.EGL_BAD_CONTEXT => return error.EglBadContext,
                 egl.EGL_BAD_MATCH => return error.UnsupportedConfig,
@@ -419,6 +388,20 @@ const GLContext = struct {
         _ = egl.eglDestroyContext(self.gl_display.egl_display, self.egl_context);
     }
 };
+
+// Keep failures that invalidate the shared EGL display (or all its contexts)
+// out of per-output recovery, regardless of which EGL call reported them.
+fn outputEglError() error{ InvalidDisplay, EGLContextLost }!egl.EGLint {
+    return switch (egl.eglGetError()) {
+        egl.EGL_BAD_DISPLAY, egl.EGL_NOT_INITIALIZED => error.InvalidDisplay,
+        egl.EGL_CONTEXT_LOST => error.EGLContextLost,
+        else => |code| code,
+    };
+}
+
+fn isDisplayFailure(err: anyerror) bool {
+    return err == error.InvalidDisplay or err == error.EGLContextLost;
+}
 
 /// A wlroots surface object. This is used for the wlroots shell layer to display a surface.
 const WlrSurface = struct {
@@ -514,11 +497,10 @@ const WlrSurface = struct {
         self.scale = @intCast(initial.buffer_scale);
 
         self.wl_surface = try compositor.createSurface();
+        errdefer self.wl_surface.destroy();
         const input_region = try compositor.createRegion();
         defer input_region.destroy();
         self.wl_surface.setInputRegion(input_region);
-
-        errdefer self.wl_surface.destroy();
 
         self.wl_egl_window = try wl.EglWindow.create(self.wl_surface, @intCast(self.width), @intCast(self.height));
         errdefer self.wl_egl_window.destroy();
@@ -528,7 +510,7 @@ const WlrSurface = struct {
             self.gl_display.egl_config,
             @ptrCast(self.wl_egl_window),
             null,
-        ) orelse switch (egl.eglGetError()) {
+        ) orelse switch (try outputEglError()) {
             egl.EGL_BAD_MATCH => return error.MismatchedConfig,
             egl.EGL_BAD_CONFIG => return error.InvalidConfig,
             egl.EGL_BAD_NATIVE_WINDOW => return error.InvalidNativeWindow,
@@ -559,7 +541,7 @@ const WlrSurface = struct {
             self.viewport = try viewporter.?.getViewport(self.wl_surface);
         }
 
-        // Roundtrip once to sync the configuration.
+        // Empty initial commit requests the first layer configure.
         self.wl_surface.commit();
 
         return self;
@@ -567,6 +549,11 @@ const WlrSurface = struct {
 
     /// Deinitialize the wlroots surface.
     pub fn deinit(self: *WlrSurface) void {
+        // With no papers left, no other context may become current for a long time.
+        // Release EGL's current-surface reference before destroying the native window.
+        if (egl.eglGetCurrentContext() == self.gl_context.egl_context) {
+            _ = egl.eglMakeCurrent(self.gl_display.egl_display, egl.EGL_NO_SURFACE, egl.EGL_NO_SURFACE, egl.EGL_NO_CONTEXT);
+        }
         _ = egl.eglDestroySurface(self.gl_display.egl_display, self.egl_surface);
         if (self.fractional_scale) |scale| scale.destroy(self.allocator);
         if (self.viewport) |viewport| viewport.destroy();
@@ -580,8 +567,9 @@ const WlrSurface = struct {
     /// Make the EGL context current.
     fn makeCurrent(self: *WlrSurface) !void {
         if (egl.eglMakeCurrent(self.gl_display.egl_display, self.egl_surface, self.egl_surface, self.gl_context.egl_context) != egl.EGL_TRUE) {
-            switch (egl.eglGetError()) {
+            switch (try outputEglError()) {
                 egl.EGL_BAD_ACCESS => return error.EglThreadError,
+                egl.EGL_BAD_SURFACE => return error.InvalidEglSurface,
                 egl.EGL_BAD_MATCH => return error.MismatchedContextOrSurfaces,
                 egl.EGL_BAD_NATIVE_WINDOW => return error.EglWindowInvalid,
                 egl.EGL_BAD_CONTEXT => return error.InvalidEglContext,
@@ -594,10 +582,8 @@ const WlrSurface = struct {
     /// Swap the EGL buffers.
     fn swapBuffers(self: *WlrSurface) !void {
         if (egl.eglSwapBuffers(self.gl_display.egl_display, self.egl_surface) != egl.EGL_TRUE) {
-            switch (egl.eglGetError()) {
-                egl.EGL_BAD_DISPLAY => return error.InvalidDisplay,
+            switch (try outputEglError()) {
                 egl.EGL_BAD_SURFACE => return error.PresentInvalidSurface,
-                egl.EGL_CONTEXT_LOST => return error.EGLContextLost,
                 else => return error.EglUnknownError,
             }
         }
@@ -776,7 +762,7 @@ const FractionalScale = struct {
         const self = try allocator.create(FractionalScale);
         errdefer allocator.destroy(self);
 
-        self.fractional_scale = try manager.getFractionalScale(surface);
+        self.* = .{ .fractional_scale = try manager.getFractionalScale(surface) };
         self.fractional_scale.setListener(*FractionalScale, listener, self);
 
         return self;
@@ -1061,6 +1047,20 @@ fn findDuplicateOutputConfig(configs: []const OutputConfig) ?[]const u8 {
     return null;
 }
 
+const OutputPolicy = struct {
+    /// Empty means *all* outputs, not a snapshot of the startup names.
+    explicit: []const OutputConfig,
+    defaults: OutputConfig,
+
+    fn configFor(self: OutputPolicy, name: []const u8) ?OutputConfig {
+        if (self.explicit.len == 0) return self.defaults;
+        for (self.explicit) |config| {
+            if (std.mem.eql(u8, config.id.?, name)) return config;
+        }
+        return null;
+    }
+};
+
 test "parseResolution parses trimmed positive dimensions" {
     const resolution = try parseResolution(" 1920x1080 ");
     try std.testing.expectEqual(@as(u32, 1920), resolution.width);
@@ -1315,31 +1315,35 @@ const Paper = struct {
     /// Frame callback plus optional frame-rate cap for this surface.
     frame_pacing: FramePacing,
 
+    fn startIfSelected(papers: *std.ArrayListUnmanaged(*Paper), allocator: Allocator, gl_display: *GLDisplay, registry: *const RegistryListener, output: *Output, policy: OutputPolicy, settings: WallpaperSettings) !void {
+        const config = (try reservePaper(papers, allocator, output, policy)) orelse return;
+        papers.appendAssumeCapacity(try create(allocator, gl_display, registry, output, config, settings));
+    }
+
     pub fn create(
         allocator: Allocator,
         gl_display: *GLDisplay,
-        compositor: *wl.Compositor,
-        layer_shell: *zwlr.LayerShellV1,
-        fractional_scale_manager: ?*wp.FractionalScaleManagerV1,
-        viewporter: ?*wp.Viewporter,
+        registry: *const RegistryListener,
         output: *Output,
-        custom_resolution: ?Resolution,
-        opacity: f32,
-        shader_source: []const u8,
-        target_frame_rate: ?u32,
-        time_modulation: TimeModulation,
-        visual_modulation: VisualModulation,
-        postprocess_passes: []const PostProcessConfig,
-        layer: Layer,
+        config: OutputConfig,
+        settings: WallpaperSettings,
     ) !*Paper {
         const self = try allocator.create(Paper);
         errdefer allocator.destroy(self);
 
         self.allocator = allocator;
-        output.retain();
-        errdefer output.release();
 
-        self.surface = try WlrSurface.createEgl(allocator, gl_display, compositor, layer_shell, fractional_scale_manager, viewporter, output, custom_resolution, layer);
+        self.surface = try WlrSurface.createEgl(
+            allocator,
+            gl_display,
+            registry.compositor.?,
+            registry.layer_shell_v1.?,
+            registry.fractional_scale_manager_v1,
+            registry.viewporter_v1,
+            output,
+            config.resolution,
+            config.layer,
+        );
 
         errdefer self.surface.deinit();
 
@@ -1350,43 +1354,75 @@ const Paper = struct {
         self.global_attributes.bind();
 
         self.pipeline = try PipelineRunner.create(allocator, try PipelineConfig.withPostprocessPasses(
-            shader_source,
+            settings.source,
             .{ .width = self.surface.width, .height = self.surface.height },
-            target_frame_rate orelse output.refresh_rate,
-            time_modulation,
-            visual_modulation,
-            postprocess_passes,
-        ), opacity);
+            config.frame_rate orelse output.refresh_rate,
+            settings.time_modulation,
+            settings.visual_modulation,
+            settings.passes,
+        ), settings.opacity);
 
         errdefer self.pipeline.destroy(allocator);
 
         self.render_frame = false;
         self.frame_pacing = .{
             .callback = try self.surface.requestAnimationFrame(),
-            .target_frame_interval_ns = if (target_frame_rate) |fps| @as(u64, std.time.ns_per_s) / fps else null,
+            .target_frame_interval_ns = if (config.frame_rate) |fps| @as(u64, std.time.ns_per_s) / fps else null,
         };
         self.frame_pacing.callback.setListener(*bool, setRenderFrame, &self.render_frame);
 
+        if (config.frame_rate) |fps| {
+            std.log.info("Rendering on output: {s} (resolution: {}x{}, frame-rate: {})", .{ output.name.?, self.surface.width, self.surface.height, fps });
+        } else {
+            std.log.info("Rendering on output: {s} (resolution: {}x{}, frame-rate: native)", .{ output.name.?, self.surface.width, self.surface.height });
+        }
         return self;
     }
 
     pub fn destroy(self: *Paper) void {
-        self.surface.makeCurrent() catch {};
-        self.pipeline.destroy(self.allocator);
-        self.global_attributes.deinit();
         self.frame_pacing.callback.destroy();
-        const output = self.surface.output;
+        // Each paper owns an unshared context. Let EGL release all of its GL
+        // objects; a retired window may not bind, and a peer may be current.
+        self.pipeline.freeStorage(self.allocator);
         self.surface.deinit();
-        output.release();
         self.allocator.destroy(self);
     }
 
-    pub fn handleConfiguration(self: *Paper) !void {
+    fn frameDue(self: *Paper, now_ns: u64, smallest_sleep: *?u64) bool {
+        // No first buffer until we can acknowledge this layer's configure.
+        if (self.surface.pending_config == null) return false;
+        const first = self.pipeline.frame() == 0;
+        if (!first and !self.render_frame) return false;
+        if (self.frame_pacing.target_frame_interval_ns) |interval| {
+            if (!first and now_ns < self.frame_pacing.next_frame_time) {
+                const delay = self.frame_pacing.next_frame_time - now_ns;
+                smallest_sleep.* = @min(smallest_sleep.* orelse delay, delay);
+                return false;
+            }
+            self.frame_pacing.next_frame_time = now_ns + interval;
+        }
+        self.render_frame = false;
+        return true;
+    }
+
+    fn drawFrame(self: *Paper, snapshot: @import("audio.zig").Snapshot, show_overlay: bool) !void {
         try self.surface.makeCurrent();
         if (try self.surface.handleConfiguration()) {
             try self.pipeline.resize(.{ .width = self.surface.width, .height = self.surface.height });
-            gl.viewport(0, 0, self.surface.width, self.surface.height);
         }
+        gl.viewport(0, 0, self.surface.width, self.surface.height);
+        self.global_attributes.bind();
+        try self.pipeline.render(snapshot);
+        if (show_overlay) {
+            overlay.renderAudioOverlay(snapshot, .{ .width = self.surface.width, .height = self.surface.height });
+        }
+
+        // Keep a valid callback for destroy() even if allocating its successor fails.
+        const callback = try self.surface.requestAnimationFrame();
+        self.frame_pacing.callback.destroy();
+        self.frame_pacing.callback = callback;
+        callback.setListener(*bool, setRenderFrame, &self.render_frame);
+        try self.surface.swapBuffers();
     }
 
     pub fn shouldStop(self: *const Paper) bool {
@@ -1394,7 +1430,7 @@ const Paper = struct {
     }
 };
 
-fn pruneStoppedPapers(papers: *std.ArrayListUnmanaged(*Paper), registry_listener: *RegistryListener) usize {
+fn pruneStoppedPapers(papers: *std.ArrayListUnmanaged(*Paper)) void {
     var i: usize = 0;
     while (i < papers.items.len) {
         const paper = papers.items[i];
@@ -1412,10 +1448,38 @@ fn pruneStoppedPapers(papers: *std.ArrayListUnmanaged(*Paper), registry_listener
 
         paper.destroy();
         _ = papers.orderedRemove(i);
-        registry_listener.pruneRemovedOutputs();
     }
+}
 
-    return papers.items.len;
+/// Shared startup resources outlive every paper, including replacements.
+const WallpaperSettings = struct {
+    opacity: f32,
+    source: []const u8,
+    time_modulation: TimeModulation,
+    visual_modulation: VisualModulation,
+    passes: []const PostProcessConfig,
+};
+
+fn reservePaper(papers: anytype, allocator: Allocator, output: *Output, policy: OutputPolicy) !?OutputConfig {
+    if (!output.ready or output.wallpaper_attempted) return null;
+    const config = policy.configFor(output.name.?) orelse return null;
+    output.wallpaper_attempted = true;
+    try papers.ensureUnusedCapacity(allocator, 1);
+    return config;
+}
+
+test "a list allocation failure consumes only this output global's attempt" {
+    var slots: std.ArrayListUnmanaged(*anyopaque) = .empty;
+    var output: Output = .{ .allocator = std.testing.allocator, .output = undefined, .id = 1, .global_name = 1, .ready = true, .name = "test" };
+    const policy: OutputPolicy = .{ .explicit = &.{}, .defaults = .{} };
+    const allocator = std.testing.failing_allocator;
+    try std.testing.expectError(error.OutOfMemory, reservePaper(&slots, allocator, &output, policy));
+    try std.testing.expectEqual(null, try reservePaper(&slots, allocator, &output, policy));
+    try std.testing.expectEqual(0, slots.items.len);
+
+    var replacement: Output = .{ .allocator = std.testing.allocator, .output = undefined, .id = 1, .global_name = 2, .ready = true, .name = "test" };
+    defer slots.deinit(std.testing.allocator);
+    try std.testing.expect((try reservePaper(&slots, std.testing.allocator, &replacement, policy)) != null);
 }
 
 pub fn main() !u8 {
@@ -1495,7 +1559,6 @@ pub fn main() !u8 {
 
     var registry_listener: RegistryListener = .{
         .allocator = allocator,
-        .display = display,
         .compositor = null,
         .layer_shell_v1 = null,
         .fractional_scale_manager_v1 = null,
@@ -1505,10 +1568,12 @@ pub fn main() !u8 {
     defer registry_listener.deinit();
 
     registry.setListener(*RegistryListener, RegistryListener.listener, &registry_listener);
+    // Discover globals, then receive the initial metadata from our wl_output binds.
+    if (display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
     if (display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
 
-    const compositor = registry_listener.compositor orelse return error.NoWlCompositor;
-    const layer_shell = registry_listener.layer_shell_v1 orelse return error.NoWlrLayerShellV1;
+    if (registry_listener.compositor == null) return error.NoWlCompositor;
+    if (registry_listener.layer_shell_v1 == null) return error.NoWlrLayerShellV1;
 
     var pipeline_file_config: ?PipelineFileConfig = null;
     defer if (pipeline_file_config) |*config| config.deinit(allocator);
@@ -1641,29 +1706,14 @@ pub fn main() !u8 {
     else
         &.{};
 
-    if (global_output_configs.items.len == 0) {
-        // No specific outputs requested, use all available outputs with the
-        // global defaults from legacy options, if any.
-        for (registry_listener.outputs.items) |output| {
-            try output.wait(display); // Ensure output is ready
-            try global_output_configs.append(allocator, .{
-                .id = try allocator.dupe(u8, output.name.?),
-                .resolution = default_resolution,
-                .frame_rate = default_frame_rate,
-            });
-        }
-    } else {
-        for (global_output_configs.items) |*output_config| {
-            applyOutputConfigDefaults(output_config, default_resolution, default_frame_rate);
-        }
+    for (global_output_configs.items) |*config| {
+        applyOutputConfigDefaults(config, default_resolution, default_frame_rate);
     }
-
-    if (global_output_configs.items.len == 0) {
-        std.log.err("no outputs configured, cannot render", .{});
-        return 1;
-    }
-
-    if (findDuplicateOutputConfig(global_output_configs.items)) |id| {
+    const policy = OutputPolicy{
+        .explicit = global_output_configs.items,
+        .defaults = .{ .resolution = default_resolution, .frame_rate = default_frame_rate },
+    };
+    if (findDuplicateOutputConfig(policy.explicit)) |id| {
         std.log.err("duplicate output id in --output config: {s}", .{id});
         return 1;
     }
@@ -1677,22 +1727,15 @@ pub fn main() !u8 {
         papers.deinit(allocator);
     }
 
-    for (global_output_configs.items) |output_config| {
+    for (policy.explicit) |output_config| {
         const output_id = output_config.id.?;
-        // Find the actual output based on the ID
-        var selected_output: ?*Output = null;
         for (registry_listener.outputs.items) |output| {
-            try output.wait(display); // Ensure output is ready
-            if (std.mem.eql(u8, output.name.?, output_id)) {
-                selected_output = output;
-                break;
-            }
-        }
-
-        const output = selected_output orelse {
+            if (!output.removed and output.ready and std.mem.eql(u8, output.name.?, output_id)) break;
+        } else {
             std.log.err("output with name '{s}' not found", .{output_id});
             std.log.info("available outputs:", .{});
             for (registry_listener.outputs.items) |out| {
+                if (out.removed or !out.ready) continue;
                 std.log.info("- {s} ({}x{}, {}Hz)", .{
                     out.name orelse "unknown",
                     out.width,
@@ -1701,51 +1744,18 @@ pub fn main() !u8 {
                 });
             }
             return 1;
-        };
-
-        const target_resolution = if (output_config.resolution) |res| res else null;
-
-        const paper = try Paper.create(
-            allocator,
-            &gl_display,
-            compositor,
-            layer_shell,
-            registry_listener.fractional_scale_manager_v1,
-            registry_listener.viewporter_v1,
-            output,
-            target_resolution,
-            opacity,
-            shader_source,
-            output_config.frame_rate,
-            effective_time_modulation,
-            effective_visual_modulation,
-            effective_postprocess_passes,
-            output_config.layer,
-        );
-        try papers.append(allocator, paper);
-        if (output_config.frame_rate) |fps| {
-            std.log.info("Rendering on output: {s} (resolution: {}x{}, frame-rate: {})", .{
-                output.name.?,
-                paper.surface.destination_width,
-                paper.surface.destination_height,
-                fps,
-            });
-        } else {
-            std.log.info("Rendering on output: {s} (resolution: {}x{}, frame-rate: native)", .{
-                output.name.?,
-                paper.surface.destination_width,
-                paper.surface.destination_height,
-            });
         }
     }
 
-    // Initial roundtrip to receive the first configure event from the compositor.
-    // We must acknowledge this event before we can attach any buffers (render).
-    if (display.roundtrip() != .SUCCESS) return error.RoundtripFailed;
-
-    for (papers.items) |paper| {
-        try paper.handleConfiguration();
-    }
+    const settings = WallpaperSettings{
+        .opacity = opacity,
+        .source = shader_source,
+        .time_modulation = effective_time_modulation,
+        .visual_modulation = effective_visual_modulation,
+        .passes = effective_postprocess_passes,
+    };
+    var startup = true;
+    var shader_validated = false;
 
     var next_audio_debug_ns: u64 = 0;
 
@@ -1754,10 +1764,18 @@ pub fn main() !u8 {
         const dispatched = display.dispatchPending();
         if (dispatched != .SUCCESS) return error.DispatchFailed;
 
-        if (pruneStoppedPapers(&papers, &registry_listener) == 0) {
-            std.log.warn("no active outputs remain, exiting", .{});
-            return 0;
+        pruneStoppedPapers(&papers);
+        registry_listener.pruneRemovedOutputs();
+        for (registry_listener.outputs.items) |output| {
+            Paper.startIfSelected(&papers, allocator, &gl_display, &registry_listener, output, policy, settings) catch |err| {
+                if (startup or isDisplayFailure(err)) return err;
+                // No output at launch can defer validation of the shared source.
+                if (!shader_validated and (err == error.ShaderFailedToCompile or err == error.ProgramFailedToLink)) return err;
+                std.log.err("cannot start wallpaper on {s}: {}", .{ output.name.?, err });
+            };
+            if (papers.items.len != 0) shader_validated = true;
         }
+        startup = false;
 
         const now = try std.time.Instant.now();
         const now_ns = now.since(std.mem.zeroes(std.time.Instant));
@@ -1770,52 +1788,24 @@ pub fn main() !u8 {
         }
 
         var smallest_frame_cap_sleep_time: ?u64 = null;
-        var rendered_count: usize = 0;
-
-        for (papers.items) |paper| {
-            var should_render_this_frame = false;
-            if (paper.pipeline.frame() == 0 or paper.render_frame) {
-                if (paper.frame_pacing.target_frame_interval_ns) |frame_interval_ns| {
-                    if (paper.pipeline.frame() == 0 or now_ns >= paper.frame_pacing.next_frame_time) {
-                        should_render_this_frame = true;
-                        paper.render_frame = false;
-                        paper.frame_pacing.next_frame_time = now_ns + frame_interval_ns;
-                    } else {
-                        const sleep_time = paper.frame_pacing.next_frame_time - now_ns;
-                        if (smallest_frame_cap_sleep_time == null or sleep_time < smallest_frame_cap_sleep_time.?) {
-                            smallest_frame_cap_sleep_time = sleep_time;
-                        }
-                    }
-                } else {
-                    should_render_this_frame = true;
-                    paper.render_frame = false;
-                }
+        var rendered = false;
+        var i: usize = 0;
+        while (i < papers.items.len) {
+            const paper = papers.items[i];
+            if (paper.frameDue(now_ns, &smallest_frame_cap_sleep_time)) {
+                paper.drawFrame(audio_snapshot, options.options.@"audio-overlay") catch |err| {
+                    if (isDisplayFailure(err)) return err;
+                    std.log.err("stopping wallpaper on {s}: {}", .{ paper.surface.output.name.?, err });
+                    _ = papers.orderedRemove(i);
+                    paper.destroy();
+                    continue;
+                };
+                rendered = true;
             }
-
-            if (!should_render_this_frame) continue;
-
-            // We are going to render
-            rendered_count += 1;
-
-            try paper.handleConfiguration();
-            // Update viewport and resolution uniforms every frame because each output may have
-            // a different configured size.
-            gl.viewport(0, 0, paper.surface.width, paper.surface.height);
-
-            paper.global_attributes.bind();
-            try paper.pipeline.render(audio_snapshot);
-            if (options.options.@"audio-overlay") {
-                overlay.renderAudioOverlay(audio_snapshot, .{ .width = paper.surface.width, .height = paper.surface.height });
-            }
-
-            paper.frame_pacing.callback.destroy();
-            paper.frame_pacing.callback = try paper.surface.requestAnimationFrame();
-            paper.frame_pacing.callback.setListener(*bool, setRenderFrame, &paper.render_frame);
-
-            try paper.surface.swapBuffers();
+            i += 1;
         }
 
-        if (rendered_count == 0) {
+        if (!rendered) {
             // If nothing was rendered, wait for events or the next capped frame time.
             if (smallest_frame_cap_sleep_time) |sleep_time| {
                 var fds = [_]std.posix.pollfd{.{
@@ -1823,7 +1813,7 @@ pub fn main() !u8 {
                     .events = std.posix.POLL.IN,
                     .revents = 0,
                 }};
-                _ = std.posix.poll(&fds, @intCast(sleep_time / 1_000_000)) catch {};
+                _ = try std.posix.poll(&fds, @intCast(sleep_time / 1_000_000));
             } else {
                 // If no custom frame rates, and nothing rendered, just block for events.
                 if (display.dispatch() != .SUCCESS) return error.DispatchFailed;

@@ -78,10 +78,12 @@ $ zig-out/bin/papertoy /path/to/shader.glsl
 - `--list-effects`: Print the built-in postprocess effects available to pipeline files and exit.
 - `--audio-overlay`: Draw a compact live audio analyzer overlay on the wallpaper.
 
-If an output is removed while Papertoy is running, rendering stops for that
-output. Newly connected outputs are discovered by the Wayland registry, but
-Papertoy does not yet create new wallpaper surfaces for them until the next
-launch.
+Without `--output`, Papertoy follows all outputs: a newly connected monitor
+gets the global resolution and frame-rate defaults. With `--output`, only the
+named outputs get a wallpaper. Each must be present at startup; if you unplug
+one, Papertoy waits for the same name and restores its resolution, frame rate,
+and layer without restarting. Other monitors keep rendering, and the process
+stays running even when none of its selected outputs are connected.
 
 Audio-reactive shader uniforms and pipeline files are documented separately:
 

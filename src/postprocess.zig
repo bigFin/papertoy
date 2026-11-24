@@ -256,7 +256,7 @@ pub const PostProcessProgram = struct {
             const log = try frag.getCompileLog(allocator);
             defer allocator.free(log);
             std.log.err("failed to compile {s} post-process shader:\n{s}", .{ label, log });
-            return error.InvalidPipelineValue;
+            return error.ShaderFailedToCompile;
         }
 
         const program = gl.Program.create();
@@ -268,7 +268,7 @@ pub const PostProcessProgram = struct {
             const log = try program.getCompileLog(allocator);
             defer allocator.free(log);
             std.log.err("failed to link {s} post-process shader:\n{s}", .{ label, log });
-            return error.InvalidPipelineValue;
+            return error.ProgramFailedToLink;
         }
 
         return .{

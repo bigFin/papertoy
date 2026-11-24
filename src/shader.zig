@@ -335,11 +335,10 @@ pub const Shader = struct {
         return self;
     }
 
-    /// Destroy the shader program and its resources.
-    pub fn destroy(self: *Shader, allocator: Allocator) void {
+    /// Release the GL objects in their owning context.
+    pub fn deinit(self: *Shader) void {
         self.uniforms.deinit();
         self.program.delete();
-        allocator.destroy(self);
     }
 
     /// Render the shader to the currently bound framebuffer.

@@ -29,3 +29,16 @@ python3 tests/wayland-smoke.py ./result/bin/papertoy \
 ```
 
 The two flags affect different processes; neither changes system driver discovery. If socket creation fails because `TMPDIR` is too long, select a shorter writable directory and rerun. For audio startup failures check `pipewire.log`, `wireplumber.log` and `demo.log` in the printed evidence directory.
+
+## Output removal and reconnect
+
+```sh
+python3 tests/output-reconnect.py ./result/bin/papertoy
+```
+
+This separate Linux fixture runs a **private headless Sway** with two outputs, pixman, and software EGL. It needs Python 3, `sway`, `swaymsg`, `grim`, and `/proc`; it does not use the host compositor or start audio. Use **Sway 1.12 / wlroots 0.20.2** or a version whose headless backend removes and re-announces `wl_output` on disable/enable and resumes page flips. Older versions can accept the commands without doing this. On NixOS, put `$(nix build --no-link --print-out-paths nixpkgs#sway-unwrapped)/bin` on `PATH` and pass the same `--egl-vendor` option as above.
+
+- **Explicit selection:** disabling `HEADLESS-1` leaves `HEADLESS-2` bare. The process waits without consuming a full CPU, then paints red on a fresh registry global. The shader returns red only at `111x77` with `iFrameRate == 15`; the Wayland trace confirms the bottom layer and configure acknowledgement before its first buffer.
+- **Automatic selection:** the original surface on `HEADLESS-2` continues submitting buffers both while its peer is absent and after the replacement has painted. Only `HEADLESS-1` gets a replacement, and a subsequently created `HEADLESS-3` picks up the global defaults. Both cases delete the shader file after startup, so a replacement must use the original source.
+
+The fixture also verifies that invalid base GLSL is fatal with outputs present at launch or when the first output appears later. In the deferred case, it also checks custom post-process compile and link failures. The script prints the package path, test PIDs, and evidence directory. This tests compositor hotplug events, not physical cable detection or reconnecting to a restarted compositor.
