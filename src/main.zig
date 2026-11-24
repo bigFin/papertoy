@@ -931,6 +931,7 @@ const OutputConfigCLI = struct {
 };
 
 const Options = struct {
+    demo: bool = false,
     pipeline: ?[]const u8 = null,
     output: OutputConfigCLI = .{}, // Dummy field to trigger parsing
     @"frame-rate": ?u32 = null,
@@ -949,6 +950,32 @@ const Options = struct {
     @"list-effects": bool = false,
     help: bool = false,
 };
+
+const RenderInput = union(enum) { demo, pipeline: []const u8, shader: []const u8 };
+
+fn selectInput(demo: bool, pipeline: ?[]const u8, positionals: []const []const u8) !RenderInput {
+    if (demo) {
+        if (pipeline != null or positionals.len != 0) return error.ConflictingDemo;
+        return .demo;
+    }
+    if (pipeline) |path| {
+        if (positionals.len != 0) return error.ConflictingPipeline;
+        return .{ .pipeline = path };
+    }
+    if (positionals.len != 1) return error.ExpectedShader;
+    return .{ .shader = positionals[0] };
+}
+
+test "selectInput accepts exactly one of demo, pipeline, or shader" {
+    try std.testing.expect((try selectInput(true, null, &.{})) == .demo);
+    try std.testing.expectEqualStrings("p.toml", (try selectInput(false, "p.toml", &.{})).pipeline);
+    try std.testing.expectEqualStrings("s.glsl", (try selectInput(false, null, &.{"s.glsl"})).shader);
+    try std.testing.expectError(error.ConflictingDemo, selectInput(true, "p.toml", &.{}));
+    try std.testing.expectError(error.ConflictingDemo, selectInput(true, null, &.{"s.glsl"}));
+    try std.testing.expectError(error.ConflictingPipeline, selectInput(false, "p.toml", &.{"s.glsl"}));
+    try std.testing.expectError(error.ExpectedShader, selectInput(false, null, &.{}));
+    try std.testing.expectError(error.ExpectedShader, selectInput(false, null, &.{ "a", "b" }));
+}
 
 fn parseResolution(s: []const u8) !Resolution {
     const trimmed = std.mem.trim(u8, s, " \t\r\n");
@@ -1129,6 +1156,7 @@ pub fn printUsage() !void {
     try stderr.writeAll(
         \\Usage: papertoy [options] SHADER_FILE
         \\   or: papertoy [options] --pipeline PIPELINE_FILE
+        \\   or: papertoy [options] --demo
         \\
         \\Run a Shadertoy-compatible shader in a wlroots layer shell, rendering it as
         \\an animated wallpaper.
@@ -1137,6 +1165,7 @@ pub fn printUsage() !void {
         \\  SHADER_FILE       The path to the shader file to render. This should be a GLSL
         \\                    fragment shader that is compatible with the Shadertoy API.
         \\Options:
+        \\  --demo            Render the bundled audio-reactive wallpaper (captures playback by default)
         \\  --pipeline <file> Use a TOML pipeline file instead of a direct shader path
         \\  --output <config>  Configure individual outputs. Can be specified multiple times.
         \\                     Format: "id=<name>[,resolution=<WxH>][,frame-rate=<fps>][,layer=<layer>]"
@@ -1413,20 +1442,17 @@ pub fn main() !u8 {
         return 0;
     }
 
-    const using_pipeline_file = options.options.pipeline != null;
-    if (using_pipeline_file and options.positionals.len != 0) {
-        std.log.err("cannot pass SHADER_FILE when --pipeline is used", .{});
+    const input = selectInput(options.options.demo, options.options.pipeline, options.positionals) catch |err| {
+        switch (err) {
+            error.ConflictingDemo => std.log.err("cannot combine --demo with SHADER_FILE or --pipeline", .{}),
+            error.ConflictingPipeline => std.log.err("cannot pass SHADER_FILE when --pipeline is used", .{}),
+            error.ExpectedShader => std.log.err("pass one SHADER_FILE, --pipeline PIPELINE_FILE, or --demo", .{}),
+        }
         try printUsage();
         return 1;
-    }
-    if (!using_pipeline_file and options.positionals.len != 1) {
-        std.log.err("must have exactly one positional argument unless --pipeline is used (got {})", .{options.positionals.len});
-        try printUsage();
-        return 1;
-    }
-    const shader_path = if (!using_pipeline_file) options.positionals[0] else null;
+    };
 
-    if (using_pipeline_file) {
+    if (input == .pipeline) {
         if (options.options.@"audio-reactive" or
             options.options.@"audio-target" != null or
             options.options.@"audio-capture" != null or
@@ -1489,43 +1515,48 @@ pub fn main() !u8 {
     var pipeline_parse_diagnostic: PipelineParseDiagnostic = .{};
     defer pipeline_parse_diagnostic.deinit(allocator);
 
-    const effective_shader_path = if (options.options.pipeline) |pipeline_path| blk: {
-        pipeline_file_config = loadPipelineFileConfigWithDiagnostic(allocator, pipeline_path, &pipeline_parse_diagnostic) catch |err| switch (err) {
-            error.FileNotFound => {
-                std.log.err("pipeline file not found: {s}", .{pipeline_path});
-                return 1;
-            },
-            error.FileTooBig => {
-                std.log.err("pipeline file is too large: {s}", .{pipeline_path});
-                return 1;
-            },
-            error.MissingBaseShader, error.MissingPassEffect, error.MissingEnvironmentVariable, error.MissingPassPath, error.InvalidPipelineSection, error.InvalidPipelineSyntax, error.InvalidPipelineKey, error.InvalidPipelineValue => {
-                logPipelineParseError(pipeline_path, &pipeline_parse_diagnostic, err);
-                return 1;
-            },
-            else => |e| {
-                std.log.err("failed to load pipeline file {s}: {}", .{ pipeline_path, e });
-                return 1;
-            },
-        };
-        break :blk pipeline_file_config.?.base_path;
-    } else shader_path.?;
+    const effective_shader_path: ?[]const u8 = switch (input) {
+        .demo => null,
+        .shader => |path| path,
+        .pipeline => |pipeline_path| blk: {
+            pipeline_file_config = loadPipelineFileConfigWithDiagnostic(allocator, pipeline_path, &pipeline_parse_diagnostic) catch |err| switch (err) {
+                error.FileNotFound => {
+                    std.log.err("pipeline file not found: {s}", .{pipeline_path});
+                    return 1;
+                },
+                error.FileTooBig => {
+                    std.log.err("pipeline file is too large: {s}", .{pipeline_path});
+                    return 1;
+                },
+                error.MissingBaseShader, error.MissingPassEffect, error.MissingEnvironmentVariable, error.MissingPassPath, error.InvalidPipelineSection, error.InvalidPipelineSyntax, error.InvalidPipelineKey, error.InvalidPipelineValue => {
+                    logPipelineParseError(pipeline_path, &pipeline_parse_diagnostic, err);
+                    return 1;
+                },
+                else => |e| {
+                    std.log.err("failed to load pipeline file {s}: {}", .{ pipeline_path, e });
+                    return 1;
+                },
+            };
+            break :blk pipeline_file_config.?.base_path;
+        },
+    };
 
-    const shader_source = std.fs.cwd().readFileAlloc(allocator, effective_shader_path, max_shader_file_size) catch |err| switch (err) {
+    const file_source = if (effective_shader_path) |path| std.fs.cwd().readFileAlloc(allocator, path, max_shader_file_size) catch |err| switch (err) {
         error.FileNotFound => {
-            std.log.err("shader file not found: {s}", .{effective_shader_path});
+            std.log.err("shader file not found: {s}", .{path});
             return 1;
         },
         error.FileTooBig => {
-            std.log.err("shader file is too large: {s}", .{effective_shader_path});
+            std.log.err("shader file is too large: {s}", .{path});
             return 1;
         },
         else => |e| {
             std.log.err("failed to read shader file: {}", .{e});
             return 1;
         },
-    };
-    defer allocator.free(shader_source);
+    } else null;
+    defer if (file_source) |source| allocator.free(source);
+    const shader_source = file_source orelse @embedFile("tidelines.glsl");
 
     if (pipeline_file_config) |*config| {
         for (config.postprocess_passes[0..config.post_count]) |*pass| {
@@ -1599,7 +1630,7 @@ pub fn main() !u8 {
         .enabled = if (pipeline_file_config) |config|
             config.audio_enabled or config.time_modulation.enabled or config.visual_modulation.enabled or options.options.@"audio-overlay"
         else
-            options.options.@"audio-reactive" or options.options.@"audio-time-reactive" or options.options.@"audio-visual-reactive" or options.options.@"audio-overlay",
+            input == .demo or options.options.@"audio-reactive" or options.options.@"audio-time-reactive" or options.options.@"audio-visual-reactive" or options.options.@"audio-overlay",
         .target = if (pipeline_file_config) |config| config.audio_target else options.options.@"audio-target",
         .capture_mode = if (pipeline_file_config) |config| config.audio_capture_mode else cli_capture_mode,
     });

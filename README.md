@@ -36,7 +36,19 @@ Once I'm happy with the stability I'll probably go for system packages.
 
 ## Usage
 
-Run the binary with the path to a Shadertoy shader as an argument:
+Try **Tidelines**, the audio-reactive wallpaper bundled in the binary:
+
+```sh
+papertoy --demo
+```
+
+Play music on your default PipeWire output: bass widens the waves and the
+teal contours turn amber as the music grows louder. In silence, the tide
+keeps moving. The demo monitors playback, not your microphone. Audio capture
+requires `wpctl` and `pw-record` on your `PATH`; no shader download or
+environment variable is needed. Press Ctrl+C to stop.
+
+To use your own Shadertoy shader instead:
 ```console
 $ zig-out/bin/papertoy /path/to/shader.glsl
 ```
@@ -120,10 +132,8 @@ $ papertoy shader.glsl --output DP-1 --frame-rate 30 --resolution 1920x1080
 
 ### Nix
 
-1. `nix run .`
-2. There is no second step.
-
-You can add the flake to your profile with: `nix profile install github:sin-ack/papertoy/<version>`
+From this checkout, run `nix run . -- --demo` to build and launch the bundled
+wallpaper, or `nix profile install .` to put this version on your `PATH`.
 
 ### Bare metal
 
