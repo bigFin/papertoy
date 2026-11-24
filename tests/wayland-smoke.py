@@ -182,6 +182,8 @@ class Desktop:
 
     def app(self, label, *args, trace=False):
         extra = {'WAYLAND_DEBUG': 'client'} if trace else {}
+        if self.args.isolate_app_path:
+            extra['PATH'] = str(self.cwd)  # Empty; fixture services keep their own PATH.
         if self.args.egl_vendor:
             extra['__EGL_VENDOR_LIBRARY_FILENAMES'] = str(self.args.egl_vendor)
         return self.process(label, self.args.binary, *args, extra=extra)
@@ -297,6 +299,8 @@ def main():
     parser.add_argument('binary', type=Path, help='path to the built Papertoy executable')
     parser.add_argument('--egl-vendor', type=Path, help='Mesa EGL vendor JSON for Papertoy only')
     parser.add_argument('--niri-x11-libs', help='colon-separated X11 library directories for Niri only')
+    parser.add_argument('--isolate-app-path', action='store_true',
+                        help='give Papertoy an empty directory as PATH to test packaged helpers')
     args = parser.parse_args()
     args.binary = args.binary.resolve()
     if not args.binary.is_file() or not os.access(args.binary, os.X_OK):

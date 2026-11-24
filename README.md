@@ -44,9 +44,10 @@ papertoy --demo
 
 Play music on your default PipeWire output: bass widens the waves and the
 teal contours turn amber as the music grows louder. In silence, the tide
-keeps moving. The demo monitors playback, not your microphone. Audio capture
-requires `wpctl` and `pw-record` on your `PATH`; no shader download or
-environment variable is needed. Press Ctrl+C to stop.
+keeps moving. The demo monitors playback, not your microphone. It uses your
+running PipeWire session and needs `wpctl` and `pw-record`. On Linux, the opt-in
+Nix package `.#audio` supplies both if they are missing from your `PATH`.
+Press Ctrl+C to stop.
 
 To use your own Shadertoy shader instead:
 ```console
@@ -134,8 +135,9 @@ $ papertoy shader.glsl --output DP-1 --frame-rate 30 --resolution 1920x1080
 
 ### Nix
 
-From this checkout, run `nix run . -- --demo` to build and launch the bundled
-wallpaper, or `nix profile install .` to put this version on your `PATH`.
+Run `nix run .#audio -- --demo` to launch the bundled wallpaper with its audio
+tools on Linux. If you already have `wpctl` and `pw-record` on your `PATH`, use
+the smaller default package: `nix run . -- --demo`.
 
 ### Bare metal
 

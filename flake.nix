@@ -65,13 +65,19 @@
       packages.default = packages.foreign.override (attrs: {
         nativeBuildInputs = attrs.nativeBuildInputs;
 
-        # Executables required for runtime
-        # These packages will be added to the PATH
-        zigWrapperBins = with env.pkgs; [];
-
         # Libraries required for runtime
         # These packages will be added to the LD_LIBRARY_PATH
         zigWrapperLibs = attrs.buildInputs or [];
+      });
+
+      # Keep the audio tools' larger closure out of the default package.
+      packages.audio = packages.default.override (_: {
+        zigWrapperArgs = optionals pkgs.stdenv.isLinux [
+          "--suffix"
+          "PATH"
+          ":"
+          (makeBinPath [pkgs.wireplumber pkgs.pipewire])
+        ];
       });
 
       # For bundling with nix bundle for running outside of nix
@@ -105,7 +111,6 @@
           []
           ++ packages.default.nativeBuildInputs
           ++ packages.default.buildInputs
-          ++ packages.default.zigWrapperBins
           ++ packages.default.zigWrapperLibs;
       };
 

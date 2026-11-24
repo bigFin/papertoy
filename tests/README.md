@@ -6,6 +6,8 @@ python3 tests/wayland-smoke.py ./result/bin/papertoy
 
 Pass the **built executable** you intend to ship (for the flake's default package, `nix build` creates `./result`). The script needs no Python packages and does not build Papertoy. It exits zero only if both checks pass. It prints the executable path and a scratch directory with service logs, Wayland traces, monitor links and native PPM frames; remove that directory when you no longer need it.
 
+For the opt-in Linux Nix package (`nix build .#audio`), add `--isolate-app-path` to verify that the installed wrapper supplies `wpctl` and `pw-record`. This gives only Papertoy an empty directory as its `PATH`; the fixture still uses the tools below. Omit the flag for the default package, source builds, and portable releases, which use the caller's tools.
+
 **Linux prerequisites:** Python 3.8+, Xvfb, Niri with its nested X11 backend and fractional scaling, `grim` with PPM capture, `dbus-daemon`, and Mesa software EGL. Audio needs PipeWire (`pipewire`, `pw-dump`, `pw-link`, `pw-play`, `pw-record`, and the null-sink SPA plugin) and WirePlumber 0.5+ (`wireplumber -p policy`, `wpctl`). Put the commands on `PATH`. No running desktop or sound server is required.
 
 ### What a pass proves
