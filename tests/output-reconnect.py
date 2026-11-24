@@ -189,6 +189,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('binary', type=Path)
     parser.add_argument('--egl-vendor', type=Path, help='application Mesa vendor JSON')
+    parser.add_argument('--isolate-app-path', action='store_true',
+                        help='give Papertoy an empty directory as PATH to test packaged helpers')
     args = parser.parse_args()
     args.binary = args.binary.resolve(strict=True)
     if args.egl_vendor:
