@@ -139,8 +139,9 @@ const UniformData = extern struct {
     time_delta: f32 align(4) = 1,
     frame_rate: f32 align(4) = 1,
     frame: i32 align(4) = 1,
-    channel_time: [4]f32 align(16) = [_]f32{ 0, 0, 0, 0 },
-    channel_resolution: [4][3]f32 align(16) = [1][3]f32{.{ 0, 0, 0 }} ** 4,
+    // std140 arrays have a 16-byte element stride, even for float and vec3.
+    channel_time: [4][4]f32 align(16) = std.mem.zeroes([4][4]f32),
+    channel_resolution: [4][4]f32 align(16) = std.mem.zeroes([4][4]f32),
     mouse: [4]f32 align(16) = .{ 0, 0, 0, 0 },
     date: [4]f32 align(16) = .{ 0, 0, 0, 0 },
     sample_rate: f32 align(4) = 1,
@@ -150,6 +151,14 @@ const UniformData = extern struct {
     audio_visual_fx: [4]f32 align(16) = .{ 0, 0, 0, 0 },
     audio_visual_style: [4]f32 align(16) = .{ 0, 0, 0, 0 },
 };
+
+test "base shader packs channel arrays and audio vectors at GLSL std140 offsets" {
+    try std.testing.expectEqual(@as(usize, 32), @offsetOf(UniformData, "channel_time"));
+    try std.testing.expectEqual(@as(usize, 96), @offsetOf(UniformData, "channel_resolution"));
+    try std.testing.expectEqual(@as(usize, 208), @offsetOf(UniformData, "audio_bands"));
+    try std.testing.expectEqual(@as(usize, 240), @offsetOf(UniformData, "audio_visualizer"));
+    try std.testing.expectEqual(@as(usize, 288), @sizeOf(UniformData));
+}
 
 /// Wrapper around the UBO for Shadertoy uniforms.
 const Uniforms = struct {

@@ -2,7 +2,7 @@
 // Copyright (c) 2024 Mitchell Hashimoto, License: MIT
 #version 330 core
 
-/* layout(binding = 0) */ uniform Globals {
+layout(std140) uniform Globals {
     uniform vec3    iResolution;
     uniform float   iTime;
     uniform float   iTimeDelta;
