@@ -55,14 +55,14 @@ $ zig-out/bin/papertoy /path/to/shader.glsl
 
   **Parameters:**
   - `id`: The name of the output (e.g., `DP-1`, `HDMI-A-1`). Run `swaymsg -t get_outputs` or similar to find yours.
-  - `resolution`: Force a specific positive logical resolution (e.g., `1920x1080`).
+  - `resolution`: Set the shader's render size in pixels (e.g., `1920x1080`). The result is scaled to fill the output. Requires `wp_viewporter` from the compositor.
   - `frame-rate`: Limit the frame rate (e.g., `30`, `60`). Defaults to compositor frame callbacks.
   - `layer`: Set the layer-shell level: `background`, `bottom`, `top`, or `overlay`. Defaults to `background`.
 
 - `--opacity <f>`: Multiply the final shader alpha by a finite value from `0.0` (fully transparent) to `1.0` (opaque). Defaults to `1.0`.
 
 - `--frame-rate <fps>`: Set the default frame rate for selected outputs. Per-output `frame-rate` values override this.
-- `--resolution <WxH>`: Set the default positive logical resolution for selected outputs. Per-output `resolution` values override this.
+- `--resolution <WxH>`: Set the default render size in pixels for selected outputs. Per-output `resolution` values override this.
 - `--list-effects`: Print the built-in postprocess effects available to pipeline files and exit.
 - `--audio-overlay`: Draw a compact live audio analyzer overlay on the wallpaper.
 
@@ -105,7 +105,7 @@ $ papertoy shader.glsl \
 ```
 
 **3. Custom Resolution**
-Force a specific aspect ratio or size.
+Render at a specific size and stretch the result to fill the output.
 ```console
 $ papertoy shader.glsl --output "id=DP-1,resolution=800x600"
 ```

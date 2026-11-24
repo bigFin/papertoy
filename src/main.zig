@@ -476,6 +476,11 @@ const WlrSurface = struct {
 
     /// Create a wlroots surface with EGL for GPU rendering.
     pub fn createEgl(allocator: Allocator, gl_display: *GLDisplay, compositor: *wl.Compositor, layer_shell: *zwlr.LayerShellV1, fractional_scale_manager: ?*wp.FractionalScaleManagerV1, viewporter: ?*wp.Viewporter, output: *Output, custom_resolution: ?Resolution, layer: Layer) !*WlrSurface {
+        const needs_viewport = fractional_scale_manager != null or custom_resolution != null;
+        if (needs_viewport and viewporter == null) {
+            std.log.err("compositor must support wp_viewporter for custom render resolution or fractional scaling", .{});
+            return error.NoViewporter;
+        }
         const self = try allocator.create(WlrSurface);
         errdefer allocator.destroy(self);
 
@@ -490,18 +495,23 @@ const WlrSurface = struct {
         self.gl_context = try GLContext.init(gl_display);
         errdefer self.gl_context.deinit();
 
-        self.destination_width = output.width;
-        self.destination_height = output.height;
         self.custom_resolution = custom_resolution;
-
-        if (custom_resolution) |resolution| {
-            self.destination_width = resolution.width;
-            self.destination_height = resolution.height;
-        }
-
-        self.width = self.destination_width;
-        self.height = self.destination_height;
-        self.scale = output.scale; // Initial scale guess, will be refined in handleConfiguration or by fractional scale
+        const initial = computeSurfaceConfiguration(.{
+            .configure_width = 0,
+            .configure_height = 0,
+            .output_width = output.width,
+            .output_height = output.height,
+            .output_scale = output.scale,
+            .output_transform = output.transform,
+            .has_fractional_scale = fractional_scale_manager != null,
+            .fractional_scale = null,
+            .custom_resolution = custom_resolution,
+        });
+        self.destination_width = initial.destination_width;
+        self.destination_height = initial.destination_height;
+        self.width = initial.buffer_width;
+        self.height = initial.buffer_height;
+        self.scale = @intCast(initial.buffer_scale);
 
         self.wl_surface = try compositor.createSurface();
         const input_region = try compositor.createRegion();
@@ -534,28 +544,19 @@ const WlrSurface = struct {
 
         // We want to ignore any exclusive zones set by other surfaces.
         self.wlr_surface.setExclusiveZone(-1);
-        self.wlr_surface.setSize(self.destination_width, self.destination_height);
-        if (fractional_scale_manager) |_| {
-            self.wl_surface.setBufferScale(1);
-        } else {
-            self.wl_surface.setBufferScale(@intCast(self.scale));
-        }
+        // Let the compositor size the fullscreen layer independently of the buffer.
+        self.wlr_surface.setSize(0, 0);
+        self.wl_surface.setBufferScale(initial.buffer_scale);
 
         // Anchor to all 4 sides to fill the screen.
         self.wlr_surface.setAnchor(.{ .top = true, .bottom = true, .left = true, .right = true });
 
         if (fractional_scale_manager) |manager| {
             self.fractional_scale = try FractionalScale.create(allocator, manager, self.wl_surface);
-            errdefer if (self.fractional_scale) |scale| scale.destroy(allocator);
-
-            const viewporter_v1 = viewporter orelse return error.NoViewporter;
-            self.viewport = try viewporter_v1.getViewport(self.wl_surface);
-            errdefer if (self.viewport) |viewport_object| viewport_object.destroy();
-        } else {
-            // No fractional scale manager available for the current compositor.
-            std.log.warn("No fractional scale manager available, using output scale instead", .{});
-            self.fractional_scale = null;
-            self.viewport = null;
+        }
+        errdefer if (self.fractional_scale) |scale| scale.destroy(allocator);
+        if (needs_viewport) {
+            self.viewport = try viewporter.?.getViewport(self.wl_surface);
         }
 
         // Roundtrip once to sync the configuration.
@@ -640,6 +641,12 @@ const WlrSurface = struct {
         const dest_height_changed = self.destination_height != configured.destination_height;
         const scale_changed = self.scale != configured.buffer_scale;
 
+        // Set the destination even if the first configure matches our initial guess.
+        // With no source rectangle, the viewport uses the whole buffer.
+        if (self.viewport) |viewport| {
+            viewport.setDestination(@intCast(configured.destination_width), @intCast(configured.destination_height));
+        }
+
         if (!width_changed and !height_changed and !dest_width_changed and !dest_height_changed and !scale_changed) return false;
 
         self.width = configured.buffer_width;
@@ -649,15 +656,9 @@ const WlrSurface = struct {
         self.scale = @intCast(configured.buffer_scale);
 
         self.wl_surface.setBufferScale(configured.buffer_scale);
-        self.wlr_surface.setSize(self.destination_width, self.destination_height);
         self.wl_egl_window.resize(@intCast(self.width), @intCast(self.height), 0, 0);
 
         std.log.debug("Surface configured: Buffer={}x{}, Logical={}x{}, Scale={}", .{ self.width, self.height, self.destination_width, self.destination_height, configured.buffer_scale });
-
-        if (self.viewport) |viewport| {
-            viewport.setSource(.fromInt(0), .fromInt(0), .fromInt(@intCast(self.width)), .fromInt(@intCast(self.height)));
-            viewport.setDestination(@intCast(self.destination_width), @intCast(self.destination_height));
-        }
 
         return true;
     }
@@ -722,8 +723,13 @@ fn computeSurfaceConfiguration(input: SurfaceConfigurationInput) SurfaceConfigur
     }
 
     if (input.custom_resolution) |resolution| {
-        logical_width = resolution.width;
-        logical_height = resolution.height;
+        return .{
+            .buffer_width = resolution.width,
+            .buffer_height = resolution.height,
+            .destination_width = logical_width,
+            .destination_height = logical_height,
+            .buffer_scale = 1,
+        };
     }
 
     if (input.has_fractional_scale) {
@@ -866,24 +872,26 @@ test "computeSurfaceConfiguration applies fractional scale with buffer scale one
     try std.testing.expectEqual(@as(i32, 1), configured.buffer_scale);
 }
 
-test "computeSurfaceConfiguration lets custom resolution override compositor size" {
-    const configured = computeSurfaceConfiguration(.{
-        .configure_width = 1920,
-        .configure_height = 1080,
-        .output_width = 3840,
-        .output_height = 2160,
-        .output_scale = 1,
-        .output_transform = .normal,
-        .has_fractional_scale = true,
-        .fractional_scale = null,
-        .custom_resolution = .{ .width = 800, .height = 600 },
-    });
+test "custom render resolution keeps the compositor's fullscreen destination" {
+    for ([_]?u32{ null, 120, 150 }) |fractional_scale| {
+        const configured = computeSurfaceConfiguration(.{
+            .configure_width = 1920,
+            .configure_height = 1080,
+            .output_width = 3840,
+            .output_height = 2160,
+            .output_scale = if (fractional_scale == @as(?u32, 120)) 1 else 2,
+            .output_transform = .normal,
+            .has_fractional_scale = fractional_scale != null,
+            .fractional_scale = fractional_scale,
+            .custom_resolution = .{ .width = 801, .height = 601 },
+        });
 
-    try std.testing.expectEqual(@as(u32, 800), configured.destination_width);
-    try std.testing.expectEqual(@as(u32, 600), configured.destination_height);
-    try std.testing.expectEqual(@as(u32, 800), configured.buffer_width);
-    try std.testing.expectEqual(@as(u32, 600), configured.buffer_height);
-    try std.testing.expectEqual(@as(i32, 1), configured.buffer_scale);
+        try std.testing.expectEqual(@as(u32, 1920), configured.destination_width);
+        try std.testing.expectEqual(@as(u32, 1080), configured.destination_height);
+        try std.testing.expectEqual(@as(u32, 801), configured.buffer_width);
+        try std.testing.expectEqual(@as(u32, 601), configured.buffer_height);
+        try std.testing.expectEqual(@as(i32, 1), configured.buffer_scale);
+    }
 }
 
 const Layer = enum {
@@ -1138,7 +1146,7 @@ pub fn printUsage() !void {
         \\                     If not specified, renders on all available outputs.
         \\  --frame-rate <fps> Set a default frame rate for selected outputs (default: native)
         \\  --opacity <f>       Multiply final shader alpha by this value (0.0-1.0, default: 1.0)
-        \\  --resolution <WxH> Set a default positive logical resolution for selected outputs
+        \\  --resolution <WxH> Set a default render size in pixels; the result fills the output
         \\  --audio-reactive   Enable audio-reactive shader inputs from PipeWire
         \\
         \\  --audio-capture <mode> Capture mode: sink (default) or source
