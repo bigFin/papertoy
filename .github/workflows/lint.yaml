@@ -28,5 +28,8 @@ jobs:
       - name: Build the project
         run: nix build .
 
+      - name: Run Zig unit tests
+        run: nix run .#build -- test --summary all
+
       - name: Run checks
         run: nix flake check
